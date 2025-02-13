@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'dart:io';
 import 'csd_file_handler.dart';
+import 'package:fl_chart/fl_chart.dart';
+import 'graphic_view.dart';
+import 'package:intl/intl.dart';
 
 void main() {
   runApp(const MyApp());
@@ -33,8 +36,31 @@ class MyHomePage extends StatefulWidget {
 class _MyHomePageState extends State<MyHomePage> {
   String _fileInfo = 'No file loaded';
   List<Map<String, dynamic>> _recordData = [];
+  bool _showChart = false;
+  int _selectedChannel = 0;
+  int _numChannels = 0;
+  List<FlSpot> _chartData = [];
+  DateTime? _startTime;
+  String? _lastLoadedFilePath;
+  List<int> _resolutions = [];
+  List<String> _channelDescriptions = [];
+  List<String> _unitTexts = [];
+  int _sampleRate = 1;
+  List<double> _channelMins = [];
+  List<double> _channelMaxs = [];
+
+  // Add this method to format values based on resolution
+  String _formatValue(dynamic value, int resolution) {
+    if (value is! num) return value.toString();
+    if (resolution <= 0) return value.toInt().toString();
+    return value.toStringAsFixed(resolution);
+  }
 
   Future<void> _openAndReadCsdFile() async {
+    setState(() {
+      _showChart = false;
+    });
+
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
@@ -50,6 +76,7 @@ class _MyHomePageState extends State<MyHomePage> {
       }
 
       String filePath = result.files.single.path!;
+      _lastLoadedFilePath = filePath;
       print('Selected file path: $filePath');
 
       File file = File(filePath);
@@ -85,23 +112,34 @@ class _MyHomePageState extends State<MyHomePage> {
       var csdFile = CsdFileHandler();
       try {
         await csdFile.load(filePath);
-        print('File loaded successfully');
-
-        var channels = csdFile.getNumOfChannels();
-        var startTime = csdFile.getStartTime();
+        final protocolHeader = csdFile.getProtocolHeader();
+        _lastLoadedFilePath = filePath;
+        _startTime = csdFile.getStartTime();
+        _numChannels = csdFile.getNumOfChannels();
         var stopTime = csdFile.getStopTime();
-        var firstTenRecords = await csdFile.getData(0, 9);
+        var firstTenRecords = await csdFile.getDataWithSampling(0, 9);
+        _resolutions = csdFile.getResolutions();
+        _channelDescriptions = csdFile.getChannelDescriptions();
+        _unitTexts = csdFile.getUnitTexts();
+        _sampleRate = protocolHeader.sampleRate;
+
+        // Get min/max values for each channel
+        _channelMins = csdFile.getChannelMins();
+        _channelMaxs = csdFile.getChannelMaxs();
 
         _recordData = List.generate(10, (recordIndex) {
-          final timestamp = startTime.add(Duration(seconds: recordIndex));
+          final timestamp = _startTime!.add(Duration(seconds: recordIndex));
           return {
-            'Record': timestamp.toString(),
+            'Record': DateFormat('yyyy-MM-dd HH:mm:ss').format(timestamp),
             ...Map.fromEntries(
               List.generate(
-                channels,
+                _numChannels,
                 (channelIndex) => MapEntry(
                   'Channel ${channelIndex}',
-                  firstTenRecords[channelIndex][recordIndex],
+                  _formatValue(
+                    firstTenRecords[channelIndex][recordIndex],
+                    _resolutions[channelIndex],
+                  ),
                 ),
               ),
             ),
@@ -111,9 +149,9 @@ class _MyHomePageState extends State<MyHomePage> {
         setState(() {
           _fileInfo = '''
 File Information:
-Number of channels: $channels
-Start time: $startTime
-Stop time: $stopTime''';
+Number of channels: $_numChannels
+Start time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(_startTime!)}
+Stop time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(stopTime)}''';
         });
       } catch (e) {
         print('Error in CsdFileHandler.load(): $e');
@@ -143,6 +181,37 @@ $stackTrace''';
     }
   }
 
+  void _prepareChartData(int channelIndex) async {
+    if (_startTime == null) return;
+
+    var csdFile = CsdFileHandler();
+    try {
+      await csdFile.load(_lastLoadedFilePath!);
+      var chartRecords = await csdFile.getDataWithSampling(0, 99);
+
+      // Add debug prints
+      print('Preparing chart data for channel: $channelIndex');
+      print('Chart records length: ${chartRecords.length}');
+      print('First few values: ${chartRecords[channelIndex].take(5)}');
+
+      setState(() {
+        _chartData = List.generate(100, (index) {
+          double timeInSeconds = index.toDouble();
+          double value = chartRecords[channelIndex][index];
+          return FlSpot(timeInSeconds, value);
+        });
+      });
+
+      // Add debug print
+      print('Chart data points: ${_chartData.take(5)}');
+
+      await csdFile.close();
+    } catch (e, stackTrace) {
+      print('Error preparing chart data: $e');
+      print('Stack trace: $stackTrace');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -155,67 +224,111 @@ $stackTrace''';
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            ElevatedButton.icon(
-              onPressed: _openAndReadCsdFile,
-              icon: const Icon(Icons.folder_open),
-              label: const Text('Open CSD File'),
+            Row(
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _openAndReadCsdFile,
+                  icon: const Icon(Icons.folder_open),
+                  label: const Text('Open CSD File'),
+                ),
+                const SizedBox(width: 16),
+                if (_lastLoadedFilePath != null) ...[
+                  ElevatedButton.icon(
+                    onPressed: () {
+                      setState(() {
+                        _showChart = !_showChart;
+                      });
+                    },
+                    icon:
+                        Icon(_showChart ? Icons.arrow_back : Icons.show_chart),
+                    label: Text(_showChart ? 'Back to Info' : 'Show Chart'),
+                  ),
+                ],
+              ],
             ),
             const SizedBox(height: 20),
-            const Text(
-              'File Information:',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 10),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                border: Border.all(color: Colors.grey),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(_fileInfo),
-            ),
-            if (_recordData.isNotEmpty) ...[
-              const SizedBox(height: 20),
-              const Text(
-                'First 10 Records:',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 10),
-              Expanded(
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: SingleChildScrollView(
-                    child: DataTable(
-                      columns: [
-                        const DataColumn(label: Text('Timestamp')),
-                        ...List.generate(
-                          _recordData.first.length - 1,
-                          (index) => DataColumn(
-                            label: Text('Channel $index'),
+            Expanded(
+              child: _showChart && _lastLoadedFilePath != null
+                  ? GraphicView(
+                      filePath: _lastLoadedFilePath!,
+                      startTime: _startTime!,
+                      numChannels: _numChannels,
+                      resolutions: _resolutions,
+                      channelDescriptions: _channelDescriptions,
+                      unitTexts: _unitTexts,
+                      sampleRate: _sampleRate,
+                      channelMins: _channelMins,
+                      channelMaxs: _channelMaxs,
+                    )
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'File Information:',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
-                      ],
-                      rows: _recordData.map((record) {
-                        return DataRow(
-                          cells: record.entries.map((entry) {
-                            return DataCell(
-                              Text(
-                                entry.key == 'Record'
-                                    ? entry.value
-                                    : (entry.value is double
-                                        ? entry.value.toStringAsFixed(6)
-                                        : entry.value.toString()),
+                        const SizedBox(height: 10),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            border: Border.all(color: Colors.grey),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(_fileInfo),
+                        ),
+                        if (_recordData.isNotEmpty) ...[
+                          const SizedBox(height: 20),
+                          const Text(
+                            'First 10 Records:',
+                            style: TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 10),
+                          Expanded(
+                            child: SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: SingleChildScrollView(
+                                child: DataTable(
+                                  columns: [
+                                    const DataColumn(label: Text('Timestamp')),
+                                    ...List.generate(
+                                      _recordData.first.length - 1,
+                                      (index) => DataColumn(
+                                        label: Text(
+                                          '${_channelDescriptions[index]}\n(${_unitTexts[index]})',
+                                          textAlign: TextAlign.center,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                  rows: _recordData.map((record) {
+                                    return DataRow(
+                                      cells: record.entries.map((entry) {
+                                        return DataCell(
+                                          Text(
+                                            entry.key == 'Record'
+                                                ? entry.value
+                                                : (entry.value is double
+                                                    ? entry.value
+                                                        .toStringAsFixed(6)
+                                                    : entry.value.toString()),
+                                          ),
+                                        );
+                                      }).toList(),
+                                    );
+                                  }).toList(),
+                                ),
                               ),
-                            );
-                          }).toList(),
-                        );
-                      }).toList(),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
-                  ),
-                ),
-              ),
-            ],
+            ),
           ],
         ),
       ),

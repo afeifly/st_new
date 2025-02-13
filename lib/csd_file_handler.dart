@@ -101,25 +101,32 @@ class CsdProtocolHeader {
 
 /// Represents a channel header in a CSD file
 class CsdChannelHeader {
-  final int pref;
-  final String channelDescription;
-  final String subDeviceDescription;
-  final String deviceDescription;
-  final String sensorDescription;
-  final int channelNumber;
-  final int unit;
-  final String unitText;
-  final int resolution;
-  final double min;
-  final double max;
-  final int deviceId;
-  final int subDeviceId;
-  final int sensorId;
-  final int channelId;
-  final int channelConfig;
-  final int slaveAddress;
-  final int deviceType;
-  final List<int> deviceUniqueId;
+  final int pref; // long (8 bytes) - offset 0xe02
+  final String
+      channelDescription; // string (128 bytes) + short (2 bytes) for length
+  final String
+      subDeviceDescription; // string (128 bytes) + short (2 bytes) for length
+  final String
+      deviceDescription; // string (19 bytes) + short (2 bytes) for length
+  final String
+      sensorDescription; // string (19 bytes) + short (2 bytes) for length
+  // Reserved 470 bytes
+  final int channelNumber; // int (4 bytes) - offset 0x110e
+  final int unit; // int (4 bytes)
+  final String unitText; // string (58 bytes) + short (2 bytes) for length
+  final int resolution; // int (4 bytes) - offset 0x1152
+  final double min; // double (8 bytes)
+  final double max; // double (8 bytes)
+  final int deviceId; // int (4 bytes)
+  final int subDeviceId; // int (4 bytes)
+  final int sensorId; // int (4 bytes)
+  final int channelId; // int (4 bytes)
+  final int channelConfig; // byte (1 byte)
+  final int slaveAddress; // unsigned char (1 byte)
+  final int deviceType; // unsigned short (2 bytes)
+  final List<int> deviceUniqueId; // byte[8]
+  // Reserved 22 bytes
+  // Total: 918 bytes
 
   CsdChannelHeader({
     required this.pref,
@@ -152,35 +159,50 @@ class CsdFileHandler {
   CsdProtocolHeader? _protocolHeader;
   List<CsdChannelHeader>? _channelHeaders;
 
+  // Add this constant
+  static const int MAX_DISPLAY_SAMPLES = 3000;
+
   /// Opens a CSD file for reading
   Future<void> load(String filePath) async {
     _filePath = filePath;
+    print('Opening file: $_filePath');
     _file = await File(filePath).open();
+
+    print('Reading file info...');
     await _readFileInfo();
+
+    print('Reading protocol header...');
     await _readProtocolHeader();
+
+    print('Reading channel headers...');
     await _readChannelHeaders();
 
-    // Read first 10 records as a test
-    print('\nReading first 10 records:');
+    print('Reading initial data records...');
     final numChannels = _protocolHeader!.numOfChannels;
     final recordLength = CsdConstants.RECORD_ID_LENGTH +
         (CsdConstants.CHANNEL_VALUE_LENGTH * numChannels);
 
-    // Calculate data start position
     final dataStartPosition = CsdConstants.CHANNEL_HEADERS_START +
         (CsdConstants.CHANNEL_HEADER_LENGTH * numChannels);
 
+    print('Data start position: $dataStartPosition');
     await _file.setPosition(dataStartPosition);
 
+    Future<Uint8List> debugRead(int length) async {
+      var buffer = await _file.read(length);
+      print(
+          'Read ${buffer.length} bytes at position ${await _file.position()}');
+      return Uint8List.fromList(buffer);
+    }
+
     for (int record = 0; record < 10; record++) {
-      var buffer = await _file.read(recordLength);
+      print('\nReading record $record...');
+      var buffer = await debugRead(recordLength);
       var data = ByteData.sublistView(buffer);
 
-      // Read record ID (first 4 bytes)
       final recordId = data.getInt32(0, Endian.big);
-      print('\nRecord $record (ID: $recordId):');
+      print('Record ID: $recordId');
 
-      // Read values for each channel
       for (int channel = 0; channel < numChannels; channel++) {
         final valueOffset = CsdConstants.RECORD_ID_LENGTH +
             (channel * CsdConstants.CHANNEL_VALUE_LENGTH);
@@ -203,16 +225,6 @@ class CsdFileHandler {
       dummy: data.getInt64(22, Endian.big),
       recordPosition: data.getInt32(30, Endian.big),
     );
-
-    // Add debug printing
-    print('\nFile Info Debug:');
-    print('Version: ${_fileInfo!.version}');
-    print('File Identifier: ${_fileInfo!.fileIdentifier}');
-    print('Timestamp: ${_fileInfo!.timestamp}');
-    print('Dummy: ${_fileInfo!.dummy}');
-    print('Record Position: ${_fileInfo!.recordPosition}');
-    print(
-        'Raw header bytes: ${buffer.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
   }
 
   /// Reads the protocol header
@@ -222,46 +234,6 @@ class CsdFileHandler {
     await _file.setPosition(CsdConstants.PROTOCOL_HEADER_START);
     var buffer = await _file.read(CsdConstants.PROTOCOL_HEADER_LENGTH);
     var data = ByteData.sublistView(buffer);
-
-    print('\nProtocol Header Debug - Raw Values:');
-    print('Pref (0-7): ${data.getInt64(0, Endian.big)}');
-    print('DeviceID (8-11): ${data.getInt32(8, Endian.big)}');
-    print(
-        'Description (14-141): "${utf8.decode(buffer.sublist(14, 142)).trim()}"');
-    print(
-        'TesterName (144-175): "${utf8.decode(buffer.sublist(144, 176)).trim()}"');
-    print(
-        'CompanyName (178-209): "${utf8.decode(buffer.sublist(178, 210)).trim()}"');
-    print(
-        'CompanyAddress (212-339): "${utf8.decode(buffer.sublist(212, 340)).trim()}"');
-    print(
-        'ServiceCompanyName (342-373): "${utf8.decode(buffer.sublist(342, 374)).trim()}"');
-    print(
-        'ServiceCompanyAddress (376-503): "${utf8.decode(buffer.sublist(376, 504)).trim()}"');
-    print(
-        'DeviceName (506-537): "${utf8.decode(buffer.sublist(506, 538)).trim()}"');
-    print('CalibrationDate (538-545): ${data.getFloat64(538, Endian.big)}');
-    print('NumOfDevices (3012-3015): ${data.getInt32(3012, Endian.big)}');
-    print('NumOfChannels (3016-3019): ${data.getInt32(3016, Endian.big)}');
-    print('NumOfSamples (3020-3023): ${data.getInt32(3020, Endian.big)}');
-    print('SampleRate (3024-3027): ${data.getInt32(3024, Endian.big)}');
-    print('SampleRateFactor (3028-3031): ${data.getInt32(3028, Endian.big)}');
-    print('TimeOfFirstSample (3032-3039): ${data.getInt64(3032, Endian.big)}');
-    print('StopTime (3040-3047): ${data.getInt64(3040, Endian.big)}');
-    print('Status (3048-3051): ${data.getInt32(3048, Endian.big)}');
-    print('FirmwareVersion (3052-3053): ${data.getInt16(3052, Endian.big)}');
-    print('FirstSamplePointer (3054-3057): ${data.getInt32(3054, Endian.big)}');
-    print('CRC (3058-3059): ${data.getInt16(3058, Endian.big)}');
-    print('DeviceType (3060-3061): ${data.getInt16(3060, Endian.big)}');
-    print('Origin (3062): ${buffer[3062]}');
-
-    // Print first few bytes in hex for debugging
-    print('\nFirst 32 bytes in hex:');
-    print(buffer
-        .sublist(0, 32)
-        .map((b) => b.toRadixString(16).padLeft(2, '0'))
-        .join(' '));
-
     _protocolHeader = CsdProtocolHeader(
       pref: data.getInt64(0, Endian.big), // long (8 bytes)
       deviceId: data.getInt32(8, Endian.big), // int (4 bytes)
@@ -296,17 +268,6 @@ class CsdFileHandler {
       origin: buffer[3062], // byte (1 byte)
       // Reserved 489 bytes
     );
-
-    // Debug printing
-    print('Pref: ${_protocolHeader!.pref}');
-    print('DeviceID: ${_protocolHeader!.deviceId}');
-    print('Description: ${_protocolHeader!.description}');
-    print('NumOfDevices: ${_protocolHeader!.numOfDevices}');
-    print('NumOfChannels: ${_protocolHeader!.numOfChannels}');
-    print('TimeOfFirstSample: ${_protocolHeader!.timeOfFirstSample}');
-    print('StopTime: ${_protocolHeader!.stopTime}');
-    print('Status: ${_protocolHeader!.status}');
-    print('FirstSamplePointer: ${_protocolHeader!.firstSamplePointer}');
   }
 
   /// Reads all channel headers
@@ -317,63 +278,74 @@ class CsdFileHandler {
     _channelHeaders = [];
 
     for (int i = 0; i < _protocolHeader!.numOfChannels; i++) {
-      var buffer = await _file.read(CsdConstants.CHANNEL_HEADER_LENGTH);
+      var rawBuffer = await _file.read(CsdConstants.CHANNEL_HEADER_LENGTH);
+      var buffer = Uint8List.fromList(rawBuffer);
       var data = ByteData.sublistView(buffer);
 
-      // Try-catch for UTF-8 decoding
-      String safeUtf8Decode(List<int> bytes) {
-        try {
-          return utf8.decode(bytes).trim();
-        } catch (e) {
-          // Fallback to ASCII if UTF-8 fails
-          return String.fromCharCodes(bytes).trim();
-        }
-      }
+      // Read string lengths and data
+      int pos = 8; // Start after pref (8 bytes)
 
-      print('\nChannel $i Header Debug:');
-      print('Pref: ${data.getInt32(0, Endian.big)}');
-      print('Channel Description: "${safeUtf8Decode(buffer.sublist(4, 36))}"');
-      print(
-          'SubDevice Description: "${safeUtf8Decode(buffer.sublist(36, 68))}"');
-      print('Device Description: "${safeUtf8Decode(buffer.sublist(68, 100))}"');
-      print(
-          'Sensor Description: "${safeUtf8Decode(buffer.sublist(100, 132))}"');
-      print('Channel Number: ${data.getInt32(132, Endian.big)}');
-      print('Unit: ${data.getInt32(136, Endian.big)}');
-      print('Unit Text: "${safeUtf8Decode(buffer.sublist(140, 172))}"');
-      print('Resolution: ${data.getInt32(172, Endian.big)}');
-      print('Min: ${data.getFloat64(176, Endian.big)}');
-      print('Max: ${data.getFloat64(184, Endian.big)}');
-      print('Device ID: ${data.getInt32(192, Endian.big)}');
-      print('SubDevice ID: ${data.getInt32(196, Endian.big)}');
-      print('Sensor ID: ${data.getInt32(200, Endian.big)}');
-      print('Channel ID: ${data.getInt32(204, Endian.big)}');
-      print('Channel Config: ${data.getInt32(208, Endian.big)}');
-      print('Slave Address: ${data.getInt32(212, Endian.big)}');
-      print('Device Type: ${data.getInt32(216, Endian.big)}');
-      print(
-          'Device Unique ID: ${buffer.sublist(220, 236).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
+      int channelDescLen = data.getInt16(pos, Endian.big);
+      pos += 2;
+      String channelDesc = safeUtf8Decode(
+          buffer.sublist(pos, pos + channelDescLen),
+          defaultValue: 'Channel $i');
+      pos += 128; // Fixed length for channel description
 
+      int subDeviceDescLen = data.getInt16(pos, Endian.big);
+      pos += 2;
+      String subDeviceDesc =
+          safeUtf8Decode(buffer.sublist(pos, pos + subDeviceDescLen));
+      pos += 128;
+
+      int deviceDescLen = data.getInt16(pos, Endian.big);
+      pos += 2;
+      String deviceDesc =
+          safeUtf8Decode(buffer.sublist(pos, pos + deviceDescLen));
+      pos += 19;
+
+      int sensorDescLen = data.getInt16(pos, Endian.big);
+      pos += 2;
+      String sensorDesc =
+          safeUtf8Decode(buffer.sublist(pos, pos + sensorDescLen));
+      pos += 19;
+
+      pos += 470; // Skip reserved bytes
+
+      // Now at offset 0x110e (channelNumber)
+      int channelNumber = data.getInt32(pos, Endian.big);
+      pos += 4;
+
+      int unit = data.getInt32(pos, Endian.big);
+      pos += 4;
+
+      int unitTextLen = data.getInt16(pos, Endian.big);
+      pos += 2;
+      String unitText = safeUtf8Decode(buffer.sublist(pos, pos + unitTextLen),
+          defaultValue: 'Unknown');
+      pos += 58;
+
+      // Now at offset 0x1152 (resolution)
       _channelHeaders!.add(CsdChannelHeader(
-        pref: data.getInt32(0, Endian.big),
-        channelDescription: safeUtf8Decode(buffer.sublist(4, 36)),
-        subDeviceDescription: safeUtf8Decode(buffer.sublist(36, 68)),
-        deviceDescription: safeUtf8Decode(buffer.sublist(68, 100)),
-        sensorDescription: safeUtf8Decode(buffer.sublist(100, 132)),
-        channelNumber: data.getInt32(132, Endian.big),
-        unit: data.getInt32(136, Endian.big),
-        unitText: safeUtf8Decode(buffer.sublist(140, 172)),
-        resolution: data.getInt32(172, Endian.big),
-        min: data.getFloat64(176, Endian.big),
-        max: data.getFloat64(184, Endian.big),
-        deviceId: data.getInt32(192, Endian.big),
-        subDeviceId: data.getInt32(196, Endian.big),
-        sensorId: data.getInt32(200, Endian.big),
-        channelId: data.getInt32(204, Endian.big),
-        channelConfig: data.getInt32(208, Endian.big),
-        slaveAddress: data.getInt32(212, Endian.big),
-        deviceType: data.getInt32(216, Endian.big),
-        deviceUniqueId: buffer.sublist(220, 236).toList(),
+        pref: data.getInt64(0, Endian.big),
+        channelDescription: channelDesc,
+        subDeviceDescription: subDeviceDesc,
+        deviceDescription: deviceDesc,
+        sensorDescription: sensorDesc,
+        channelNumber: channelNumber,
+        unit: unit,
+        unitText: unitText,
+        resolution: data.getInt32(pos, Endian.big), // 0x1152
+        min: data.getFloat64(pos + 4, Endian.big),
+        max: data.getFloat64(pos + 12, Endian.big),
+        deviceId: data.getInt32(pos + 20, Endian.big),
+        subDeviceId: data.getInt32(pos + 24, Endian.big),
+        sensorId: data.getInt32(pos + 28, Endian.big),
+        channelId: data.getInt32(pos + 32, Endian.big),
+        channelConfig: buffer[pos + 36], // 1 byte
+        slaveAddress: buffer[pos + 37], // 1 byte
+        deviceType: data.getInt16(pos + 38, Endian.big), // 2 bytes
+        deviceUniqueId: buffer.sublist(pos + 40, pos + 48).toList(), // 8 bytes
       ));
     }
   }
@@ -403,33 +375,51 @@ class CsdFileHandler {
     return _protocolHeader!.numOfChannels;
   }
 
-  /// Gets measurement data for all channels between start and end indices
-  Future<List<List<double>>> getData(int start, int end) async {
+  /// Gets measurement data with sampling for large files
+  Future<List<List<double>>> getDataWithSampling(int start, int end) async {
     if (_protocolHeader == null) {
       throw StateError('File not loaded');
     }
+
+    final totalSamples = _protocolHeader!.numOfSamples;
+    print('Total samples in file: $totalSamples');
+
+    // Calculate sampling step
+    int samplingStep = 1;
+    if (totalSamples > MAX_DISPLAY_SAMPLES) {
+      samplingStep = (totalSamples / MAX_DISPLAY_SAMPLES).ceil();
+    }
+    print('Using sampling step: $samplingStep');
 
     final numChannels = _protocolHeader!.numOfChannels;
     final recordLength = CsdConstants.RECORD_ID_LENGTH +
         (CsdConstants.CHANNEL_VALUE_LENGTH * numChannels);
 
-    // Calculate the start position of data section
     final dataStartPosition = CsdConstants.CHANNEL_HEADERS_START +
         (CsdConstants.CHANNEL_HEADER_LENGTH * numChannels);
+    print('Data starts at position: $dataStartPosition');
 
-    // Initialize result array for each channel
     List<List<double>> result = List.generate(numChannels, (_) => []);
 
-    // Read data for requested range
-    for (int i = start; i <= end; i++) {
+    final actualSamples = (totalSamples / samplingStep).floor();
+    print('Will read $actualSamples samples');
+
+    int progressCounter = 0;
+    final progressInterval = actualSamples ~/ 10; // Report progress every 10%
+
+    for (int i = 0; i < totalSamples; i += samplingStep) {
+      if (progressCounter % progressInterval == 0) {
+        print(
+            'Reading progress: ${(progressCounter / actualSamples * 100).toStringAsFixed(1)}%');
+      }
+      progressCounter++;
+
       final position = dataStartPosition + (i * recordLength);
       await _file.setPosition(position);
 
-      // Read one complete record
       var buffer = await _file.read(recordLength);
-      var data = ByteData.sublistView(buffer);
+      var data = ByteData.sublistView(Uint8List.fromList(buffer));
 
-      // Skip the 4-byte record ID
       for (int channel = 0; channel < numChannels; channel++) {
         final valueOffset = CsdConstants.RECORD_ID_LENGTH +
             (channel * CsdConstants.CHANNEL_VALUE_LENGTH);
@@ -438,6 +428,7 @@ class CsdFileHandler {
       }
     }
 
+    print('Finished reading data');
     return result;
   }
 
@@ -457,5 +448,62 @@ class CsdFileHandler {
   /// Closes the file
   Future<void> close() async {
     await _file.close();
+  }
+
+  List<String> getChannelDescriptions() {
+    if (_channelHeaders == null) {
+      throw StateError('Channel headers not loaded');
+    }
+    return _channelHeaders!.map((header) => header.channelDescription).toList();
+  }
+
+  List<String> getUnitTexts() {
+    if (_channelHeaders == null) {
+      throw StateError('Channel headers not loaded');
+    }
+    return _channelHeaders!.map((header) => header.unitText).toList();
+  }
+
+  List<int> getResolutions() {
+    if (_channelHeaders == null) {
+      throw StateError('Channel headers not loaded');
+    }
+    return _channelHeaders!.map((header) => header.resolution).toList();
+  }
+
+  String safeUtf8Decode(List<int> bytes, {String defaultValue = ''}) {
+    try {
+      return utf8.decode(bytes).trim();
+    } catch (e) {
+      print('Warning: UTF-8 decode failed, falling back to ASCII');
+      try {
+        return String.fromCharCodes(bytes.where((b) => b > 0 && b < 128))
+            .trim();
+      } catch (e) {
+        print('Warning: ASCII decode failed, returning default value');
+        return defaultValue;
+      }
+    }
+  }
+
+  CsdProtocolHeader getProtocolHeader() {
+    if (_protocolHeader == null) {
+      throw StateError('Protocol header not loaded');
+    }
+    return _protocolHeader!;
+  }
+
+  List<double> getChannelMins() {
+    if (_channelHeaders == null) {
+      throw StateError('Channel headers not loaded');
+    }
+    return _channelHeaders!.map((header) => header.min).toList();
+  }
+
+  List<double> getChannelMaxs() {
+    if (_channelHeaders == null) {
+      throw StateError('Channel headers not loaded');
+    }
+    return _channelHeaders!.map((header) => header.max).toList();
   }
 }

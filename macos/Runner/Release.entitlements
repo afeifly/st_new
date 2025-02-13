@@ -24,5 +24,7 @@
 	<array>
 		<string>/</string>
 	</array>
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
 </dict>
 </plist>
