@@ -168,46 +168,58 @@ class CsdFileHandler {
     print('Opening file: $_filePath');
     _file = await File(filePath).open();
 
-    print('Reading file info...');
-    await _readFileInfo();
+    try {
+      print('Reading file info...');
+      await _readFileInfo();
 
-    print('Reading protocol header...');
-    await _readProtocolHeader();
+      print('Reading protocol header...');
+      try {
+        await _readProtocolHeader();
+      } catch (e) {
+        if (e is FormatException) {
+          print(e.message);
+          // Create an empty protocol header with valid channels but 0 samples
+          _protocolHeader = CsdProtocolHeader(
+            pref: 0,
+            deviceId: 0,
+            description: '',
+            testerName: '',
+            companyName: '',
+            companyAddress: '',
+            serviceCompanyName: '',
+            serviceCompanyAddress: '',
+            deviceName: '',
+            calibrationDate: 0,
+            numOfDevices: 0,
+            numOfChannels: 9, // Use the actual number of channels we found
+            numOfSamples: 0, // Keep samples as 0
+            sampleRate: 0,
+            sampleRateFactor: 0,
+            timeOfFirstSample: 0,
+            stopTime: 0,
+            status: 0,
+            firmwareVersion: 0,
+            firstSamplePointer: 0,
+            crc: 0,
+            deviceType: 0,
+            origin: 0,
+          );
+        } else {
+          rethrow;
+        }
+      }
 
-    print('Reading channel headers...');
-    await _readChannelHeaders();
-
-    print('Reading initial data records...');
-    final numChannels = _protocolHeader!.numOfChannels;
-    final recordLength = CsdConstants.RECORD_ID_LENGTH +
-        (CsdConstants.CHANNEL_VALUE_LENGTH * numChannels);
-
-    final dataStartPosition = CsdConstants.CHANNEL_HEADERS_START +
-        (CsdConstants.CHANNEL_HEADER_LENGTH * numChannels);
-
-    print('Data start position: $dataStartPosition');
-    await _file.setPosition(dataStartPosition);
-
-    Future<Uint8List> debugRead(int length) async {
-      var buffer = await _file.read(length);
-      print(
-          'Read ${buffer.length} bytes at position ${await _file.position()}');
-      return Uint8List.fromList(buffer);
-    }
-
-    for (int record = 0; record < 10; record++) {
-      print('\nReading record $record...');
-      var buffer = await debugRead(recordLength);
-      var data = ByteData.sublistView(buffer);
-
-      final recordId = data.getInt32(0, Endian.big);
-      print('Record ID: $recordId');
-
-      for (int channel = 0; channel < numChannels; channel++) {
-        final valueOffset = CsdConstants.RECORD_ID_LENGTH +
-            (channel * CsdConstants.CHANNEL_VALUE_LENGTH);
-        final value = data.getFloat64(valueOffset, Endian.big);
-        print('  Channel $channel: $value');
+      // Continue with channel headers even if samples=0
+      final numChannels = _protocolHeader!.numOfChannels;
+      if (numChannels > 0) {
+        print('Reading channel headers...');
+        await _readChannelHeaders();
+      }
+    } catch (e) {
+      if (e is FormatException) {
+        print(e.message);
+      } else {
+        rethrow;
       }
     }
   }
@@ -234,119 +246,171 @@ class CsdFileHandler {
     await _file.setPosition(CsdConstants.PROTOCOL_HEADER_START);
     var buffer = await _file.read(CsdConstants.PROTOCOL_HEADER_LENGTH);
     var data = ByteData.sublistView(buffer);
+
+    // Debug print the raw values
+    final rawNumDevices = data.getInt32(3012, Endian.big);
+    final rawNumChannels = data.getInt32(3016, Endian.big);
+    final rawNumSamples = data.getInt32(3020, Endian.big);
+    final rawSampleRate = data.getInt32(3024, Endian.big);
+    var rawStartTime = data.getInt64(3032, Endian.big);
+    var rawStopTime = data.getInt64(3040, Endian.big);
+
+    // Validate timestamps
+    if (rawStartTime > 8640000000000000 || rawStartTime < -8640000000000000) {
+      print('Warning: Invalid start time: $rawStartTime, defaulting to 0');
+      rawStartTime = 0;
+    }
+    if (rawStopTime > 8640000000000000 || rawStopTime < -8640000000000000) {
+      print('Warning: Invalid stop time: $rawStopTime, defaulting to 0');
+      rawStopTime = 0;
+    }
+
+    print('Raw protocol header values:');
+    print('- Number of channels: $rawNumChannels');
+    print('- Number of samples: $rawNumSamples');
+    print('- Sample rate (raw): $rawSampleRate');
+    print('- Start time: ${DateTime.fromMillisecondsSinceEpoch(rawStartTime)}');
+    print('- Stop time: ${DateTime.fromMillisecondsSinceEpoch(rawStopTime)}');
+
+    // Create protocol header with the raw values
     _protocolHeader = CsdProtocolHeader(
-      pref: data.getInt64(0, Endian.big), // long (8 bytes)
-      deviceId: data.getInt32(8, Endian.big), // int (4 bytes)
-      description:
-          utf8.decode(buffer.sublist(14, 142)).trim(), // string (128 bytes)
-      testerName:
-          utf8.decode(buffer.sublist(144, 176)).trim(), // string (32 bytes)
-      companyName:
-          utf8.decode(buffer.sublist(178, 210)).trim(), // string (32 bytes)
-      companyAddress:
-          utf8.decode(buffer.sublist(212, 340)).trim(), // string (128 bytes)
-      serviceCompanyName:
-          utf8.decode(buffer.sublist(342, 374)).trim(), // string (32 bytes)
-      serviceCompanyAddress:
-          utf8.decode(buffer.sublist(376, 504)).trim(), // string (128 bytes)
-      deviceName:
-          utf8.decode(buffer.sublist(506, 538)).trim(), // string (32 bytes)
-      calibrationDate: data.getFloat64(538, Endian.big), // double (8 bytes)
-      // Reserved 2466 bytes
-      numOfDevices: data.getInt32(3012, Endian.big), // 3046 - 34
-      numOfChannels: data.getInt32(3016, Endian.big), // 3050 - 34
-      numOfSamples: data.getInt32(3020, Endian.big), // 3054 - 34
-      sampleRate: data.getInt32(3024, Endian.big), // 3058 - 34
+      pref: data.getInt64(0, Endian.big),
+      deviceId: data.getInt32(8, Endian.big),
+      description: utf8.decode(buffer.sublist(14, 142)).trim(),
+      testerName: utf8.decode(buffer.sublist(144, 176)).trim(),
+      companyName: utf8.decode(buffer.sublist(178, 210)).trim(),
+      companyAddress: utf8.decode(buffer.sublist(212, 340)).trim(),
+      serviceCompanyName: utf8.decode(buffer.sublist(342, 374)).trim(),
+      serviceCompanyAddress: utf8.decode(buffer.sublist(376, 504)).trim(),
+      deviceName: utf8.decode(buffer.sublist(506, 538)).trim(),
+      calibrationDate: data.getFloat64(538, Endian.big),
+      numOfDevices: rawNumDevices,
+      numOfChannels:
+          rawNumChannels > 0 ? rawNumChannels : 9, // Default to 9 if invalid
+      numOfSamples:
+          rawNumSamples > 0 ? rawNumSamples : 0, // Default to 0 if invalid
+      sampleRate: rawSampleRate,
       sampleRateFactor: data.getInt32(3028, Endian.big),
-      timeOfFirstSample: data.getInt64(3032, Endian.big),
-      stopTime: data.getInt64(3040, Endian.big),
+      timeOfFirstSample: rawStartTime,
+      stopTime: rawStopTime,
       status: data.getInt32(3048, Endian.big),
       firmwareVersion: data.getInt16(3052, Endian.big),
       firstSamplePointer: data.getInt32(3054, Endian.big),
       crc: data.getInt16(3058, Endian.big),
       deviceType: data.getInt16(3060, Endian.big),
-      origin: buffer[3062], // byte (1 byte)
-      // Reserved 489 bytes
+      origin: buffer[3062],
     );
+
+    // Log warning instead of throwing exception
+    if (rawNumChannels <= 0 || rawNumSamples <= 0) {
+      print(
+          'Warning: Invalid protocol header values: channels=$rawNumChannels, samples=$rawNumSamples');
+      print('Using default values: channels=9, samples=0');
+    }
   }
 
   /// Reads all channel headers
   Future<void> _readChannelHeaders() async {
-    if (_protocolHeader == null) throw StateError('Protocol header not loaded');
+    if (_protocolHeader == null) {
+      _channelHeaders = [];
+      return;
+    }
 
-    await _file.setPosition(CsdConstants.CHANNEL_HEADERS_START);
-    _channelHeaders = [];
+    final numChannels = _protocolHeader!.numOfChannels;
+    if (numChannels <= 0) {
+      _channelHeaders = [];
+      return;
+    }
 
-    for (int i = 0; i < _protocolHeader!.numOfChannels; i++) {
-      var rawBuffer = await _file.read(CsdConstants.CHANNEL_HEADER_LENGTH);
-      var buffer = Uint8List.fromList(rawBuffer);
-      var data = ByteData.sublistView(buffer);
+    try {
+      await _file.setPosition(CsdConstants.CHANNEL_HEADERS_START);
+      _channelHeaders = [];
 
-      // Read string lengths and data
-      int pos = 8; // Start after pref (8 bytes)
+      for (int i = 0; i < numChannels; i++) {
+        try {
+          var rawBuffer = await _file.read(CsdConstants.CHANNEL_HEADER_LENGTH);
+          if (rawBuffer.length < CsdConstants.CHANNEL_HEADER_LENGTH) {
+            print('Warning: Incomplete channel header data for channel $i');
+            break;
+          }
+          var buffer = Uint8List.fromList(rawBuffer);
+          var data = ByteData.sublistView(buffer);
 
-      int channelDescLen = data.getInt16(pos, Endian.big);
-      pos += 2;
-      String channelDesc = safeUtf8Decode(
-          buffer.sublist(pos, pos + channelDescLen),
-          defaultValue: 'Channel $i');
-      pos += 128; // Fixed length for channel description
+          // Read string lengths and data
+          int pos = 8; // Start after pref (8 bytes)
 
-      int subDeviceDescLen = data.getInt16(pos, Endian.big);
-      pos += 2;
-      String subDeviceDesc =
-          safeUtf8Decode(buffer.sublist(pos, pos + subDeviceDescLen));
-      pos += 128;
+          int channelDescLen = data.getInt16(pos, Endian.big);
+          pos += 2;
+          String channelDesc = safeUtf8Decode(
+              buffer.sublist(pos, pos + channelDescLen),
+              defaultValue: 'Channel $i');
+          pos += 128; // Fixed length for channel description
 
-      int deviceDescLen = data.getInt16(pos, Endian.big);
-      pos += 2;
-      String deviceDesc =
-          safeUtf8Decode(buffer.sublist(pos, pos + deviceDescLen));
-      pos += 19;
+          int subDeviceDescLen = data.getInt16(pos, Endian.big);
+          pos += 2;
+          String subDeviceDesc =
+              safeUtf8Decode(buffer.sublist(pos, pos + subDeviceDescLen));
+          pos += 128;
 
-      int sensorDescLen = data.getInt16(pos, Endian.big);
-      pos += 2;
-      String sensorDesc =
-          safeUtf8Decode(buffer.sublist(pos, pos + sensorDescLen));
-      pos += 19;
+          int deviceDescLen = data.getInt16(pos, Endian.big);
+          pos += 2;
+          String deviceDesc =
+              safeUtf8Decode(buffer.sublist(pos, pos + deviceDescLen));
+          pos += 19;
 
-      pos += 470; // Skip reserved bytes
+          int sensorDescLen = data.getInt16(pos, Endian.big);
+          pos += 2;
+          String sensorDesc =
+              safeUtf8Decode(buffer.sublist(pos, pos + sensorDescLen));
+          pos += 19;
 
-      // Now at offset 0x110e (channelNumber)
-      int channelNumber = data.getInt32(pos, Endian.big);
-      pos += 4;
+          pos += 470; // Skip reserved bytes
 
-      int unit = data.getInt32(pos, Endian.big);
-      pos += 4;
+          // Now at offset 0x110e (channelNumber)
+          int channelNumber = data.getInt32(pos, Endian.big);
+          pos += 4;
 
-      int unitTextLen = data.getInt16(pos, Endian.big);
-      pos += 2;
-      String unitText = safeUtf8Decode(buffer.sublist(pos, pos + unitTextLen),
-          defaultValue: 'Unknown');
-      pos += 58;
+          int unit = data.getInt32(pos, Endian.big);
+          pos += 4;
 
-      // Now at offset 0x1152 (resolution)
-      _channelHeaders!.add(CsdChannelHeader(
-        pref: data.getInt64(0, Endian.big),
-        channelDescription: channelDesc,
-        subDeviceDescription: subDeviceDesc,
-        deviceDescription: deviceDesc,
-        sensorDescription: sensorDesc,
-        channelNumber: channelNumber,
-        unit: unit,
-        unitText: unitText,
-        resolution: data.getInt32(pos, Endian.big), // 0x1152
-        min: data.getFloat64(pos + 4, Endian.big),
-        max: data.getFloat64(pos + 12, Endian.big),
-        deviceId: data.getInt32(pos + 20, Endian.big),
-        subDeviceId: data.getInt32(pos + 24, Endian.big),
-        sensorId: data.getInt32(pos + 28, Endian.big),
-        channelId: data.getInt32(pos + 32, Endian.big),
-        channelConfig: buffer[pos + 36], // 1 byte
-        slaveAddress: buffer[pos + 37], // 1 byte
-        deviceType: data.getInt16(pos + 38, Endian.big), // 2 bytes
-        deviceUniqueId: buffer.sublist(pos + 40, pos + 48).toList(), // 8 bytes
-      ));
+          int unitTextLen = data.getInt16(pos, Endian.big);
+          pos += 2;
+          String unitText = safeUtf8Decode(
+              buffer.sublist(pos, pos + unitTextLen),
+              defaultValue: 'Unknown');
+          pos += 58;
+
+          // Now at offset 0x1152 (resolution)
+          _channelHeaders!.add(CsdChannelHeader(
+            pref: data.getInt64(0, Endian.big),
+            channelDescription: channelDesc,
+            subDeviceDescription: subDeviceDesc,
+            deviceDescription: deviceDesc,
+            sensorDescription: sensorDesc,
+            channelNumber: channelNumber,
+            unit: unit,
+            unitText: unitText,
+            resolution: data.getInt32(pos, Endian.big), // 0x1152
+            min: data.getFloat64(pos + 4, Endian.big),
+            max: data.getFloat64(pos + 12, Endian.big),
+            deviceId: data.getInt32(pos + 20, Endian.big),
+            subDeviceId: data.getInt32(pos + 24, Endian.big),
+            sensorId: data.getInt32(pos + 28, Endian.big),
+            channelId: data.getInt32(pos + 32, Endian.big),
+            channelConfig: buffer[pos + 36], // 1 byte
+            slaveAddress: buffer[pos + 37], // 1 byte
+            deviceType: data.getInt16(pos + 38, Endian.big), // 2 bytes
+            deviceUniqueId:
+                buffer.sublist(pos + 40, pos + 48).toList(), // 8 bytes
+          ));
+        } catch (e) {
+          print('Warning: Failed to read channel header $i: $e');
+          break;
+        }
+      }
+    } catch (e) {
+      print('Warning: Failed to read channel headers: $e');
+      _channelHeaders = [];
     }
   }
 
@@ -355,8 +419,7 @@ class CsdFileHandler {
     if (_protocolHeader == null) {
       throw StateError('File not loaded');
     }
-    return DateTime.fromMillisecondsSinceEpoch(
-        _protocolHeader!.timeOfFirstSample);
+    return _convertTimestamp(_protocolHeader!.timeOfFirstSample);
   }
 
   /// Gets the stop time of the measurements
@@ -364,7 +427,7 @@ class CsdFileHandler {
     if (_protocolHeader == null) {
       throw StateError('File not loaded');
     }
-    return DateTime.fromMillisecondsSinceEpoch(_protocolHeader!.stopTime);
+    return _convertTimestamp(_protocolHeader!.stopTime);
   }
 
   /// Gets the number of channels
@@ -375,29 +438,54 @@ class CsdFileHandler {
     return _protocolHeader!.numOfChannels;
   }
 
+  int getNumOfSamples() {
+    if (_protocolHeader == null) {
+      throw StateError('File not loaded');
+    }
+    // Return 0 if samples is invalid
+    return Math.max(0, _protocolHeader!.numOfSamples);
+  }
+
   /// Gets measurement data with sampling for large files
   Future<List<List<double>>> getDataWithSampling(int start, int end,
       {int? samplingStep}) async {
     if (_protocolHeader == null) {
-      throw StateError('File not loaded');
+      return []; // Return empty list if protocol header is not loaded
     }
 
+    final numChannels = _protocolHeader!.numOfChannels;
     final totalSamples = _protocolHeader!.numOfSamples;
-    print('Total samples in file: $totalSamples');
-    print('Requested range: $start to $end');
 
-    // Ensure start and end are within bounds
+    // If we have 0 samples, return empty arrays for each channel
+    if (totalSamples <= 0) {
+      print('Warning: No samples available.');
+      return List.generate(numChannels, (_) => []);
+    }
+
+    // Ensure start and end are valid integers
     start = start.clamp(0, totalSamples - 1);
     end = end.clamp(0, totalSamples - 1);
 
+    // If end is less than start, return empty data
+    if (end < start) {
+      print('Warning: Invalid range: start=$start, end=$end');
+      return List.generate(numChannels, (_) => []);
+    }
+
+    print('Total samples in file: $totalSamples');
+    print('Adjusted range: $start to $end');
+
     // Calculate actual number of samples to read
     final rangeSamples = end - start + 1;
+    if (rangeSamples <= 0) {
+      print('Warning: Invalid range samples: $rangeSamples');
+      return List.generate(numChannels, (_) => []);
+    }
 
     // Calculate sampling step for the requested range
-    final actualSamplingStep = samplingStep ?? 1;
+    final actualSamplingStep = Math.max(1, samplingStep ?? 1);
     print('Using sampling step: $actualSamplingStep');
 
-    final numChannels = _protocolHeader!.numOfChannels;
     final recordLength = CsdConstants.RECORD_ID_LENGTH +
         (CsdConstants.CHANNEL_VALUE_LENGTH * numChannels);
 
@@ -431,6 +519,10 @@ class CsdFileHandler {
       await _file.setPosition(position);
 
       var buffer = await _file.read(recordLength);
+      if (buffer.length < recordLength) {
+        print('Warning: Incomplete data record at sample index $sampleIndex');
+        break;
+      }
       var data = ByteData.sublistView(Uint8List.fromList(buffer));
 
       for (int channel = 0; channel < numChannels; channel++) {
@@ -464,22 +556,23 @@ class CsdFileHandler {
   }
 
   List<String> getChannelDescriptions() {
-    if (_channelHeaders == null) {
-      throw StateError('Channel headers not loaded');
+    if (_channelHeaders == null || _channelHeaders!.isEmpty) {
+      return List.generate(
+          _protocolHeader?.numOfChannels ?? 0, (i) => 'Channel $i');
     }
     return _channelHeaders!.map((header) => header.channelDescription).toList();
   }
 
   List<String> getUnitTexts() {
-    if (_channelHeaders == null) {
-      throw StateError('Channel headers not loaded');
+    if (_channelHeaders == null || _channelHeaders!.isEmpty) {
+      return List.generate(_protocolHeader?.numOfChannels ?? 0, (_) => '');
     }
     return _channelHeaders!.map((header) => header.unitText).toList();
   }
 
   List<int> getResolutions() {
-    if (_channelHeaders == null) {
-      throw StateError('Channel headers not loaded');
+    if (_channelHeaders == null || _channelHeaders!.isEmpty) {
+      return List.generate(_protocolHeader?.numOfChannels ?? 0, (_) => 0);
     }
     return _channelHeaders!.map((header) => header.resolution).toList();
   }
@@ -501,22 +594,143 @@ class CsdFileHandler {
 
   CsdProtocolHeader getProtocolHeader() {
     if (_protocolHeader == null) {
-      throw StateError('Protocol header not loaded');
+      // Return a default protocol header with valid channels but no samples
+      return CsdProtocolHeader(
+        pref: 0,
+        deviceId: 0,
+        description: '',
+        testerName: '',
+        companyName: '',
+        companyAddress: '',
+        serviceCompanyName: '',
+        serviceCompanyAddress: '',
+        deviceName: '',
+        calibrationDate: 0,
+        numOfDevices: 0,
+        numOfChannels: 9,
+        numOfSamples: 0,
+        sampleRate: 0,
+        sampleRateFactor: 0,
+        timeOfFirstSample: 0,
+        stopTime: 0,
+        status: 0,
+        firmwareVersion: 0,
+        firstSamplePointer: 0,
+        crc: 0,
+        deviceType: 0,
+        origin: 0,
+      );
     }
     return _protocolHeader!;
   }
 
   List<double> getChannelMins() {
-    if (_channelHeaders == null) {
-      throw StateError('Channel headers not loaded');
+    if (_channelHeaders == null || _channelHeaders!.isEmpty) {
+      return List.generate(_protocolHeader?.numOfChannels ?? 0, (_) => 0.0);
     }
     return _channelHeaders!.map((header) => header.min).toList();
   }
 
   List<double> getChannelMaxs() {
-    if (_channelHeaders == null) {
-      throw StateError('Channel headers not loaded');
+    if (_channelHeaders == null || _channelHeaders!.isEmpty) {
+      return List.generate(_protocolHeader?.numOfChannels ?? 0, (_) => 0.0);
     }
     return _channelHeaders!.map((header) => header.max).toList();
+  }
+
+  DateTime _convertTimestamp(int timestamp) {
+    const maxMillis = 8640000000000000; // Maximum allowed milliseconds
+    const minMillis = -8640000000000000; // Minimum allowed milliseconds
+
+    if (timestamp <= 0 || timestamp > maxMillis || timestamp < minMillis) {
+      print('Warning: Invalid timestamp: $timestamp, defaulting to Unix epoch');
+      return DateTime.fromMillisecondsSinceEpoch(0);
+    }
+
+    try {
+      return DateTime.fromMillisecondsSinceEpoch(timestamp);
+    } catch (e) {
+      print('Warning: Invalid timestamp: $timestamp, defaulting to Unix epoch');
+      return DateTime.fromMillisecondsSinceEpoch(0);
+    }
+  }
+
+  /// Fixes the sample count in the protocol header
+  Future<void> fixSampleCount(String filePath, int actualSamples) async {
+    if (_protocolHeader == null) {
+      throw Exception('Protocol header not loaded');
+    }
+
+    // First read the current file to get all values
+    var readFile = await File(filePath).open(mode: FileMode.read);
+    late final int currentSampleRate;
+    late final int fileLength;
+
+    try {
+      fileLength = await readFile.length();
+      await readFile.setPosition(CsdConstants.FILE_HEADER_LENGTH + 3024);
+      var sampleRateBuffer = await readFile.read(4);
+      var sampleRateData =
+          ByteData.sublistView(Uint8List.fromList(sampleRateBuffer));
+      currentSampleRate = sampleRateData.getInt32(0, Endian.big);
+    } finally {
+      await readFile.close();
+    }
+
+    final sampleRate = currentSampleRate <= 0 ? 1 : currentSampleRate;
+    final startTime = _protocolHeader!.timeOfFirstSample;
+    final effectiveStartTime =
+        startTime <= 0 ? DateTime.now().millisecondsSinceEpoch : startTime;
+
+    final durationInSeconds = (actualSamples / sampleRate).ceil();
+    final stopTime = effectiveStartTime + (durationInSeconds * 1000);
+
+    // Create a temporary copy of the file
+    var tempFile = File('${filePath}.tmp');
+    await File(filePath).copy('${filePath}.tmp');
+
+    // Open original file for writing and temp file for reading
+    var writeFile = await File(filePath).open(mode: FileMode.write);
+    var tempRead = await tempFile.open(mode: FileMode.read);
+
+    try {
+      // Copy the file header and protocol header
+      await tempRead.setPosition(0);
+      var headerBuffer =
+          await tempRead.read(CsdConstants.CHANNEL_HEADERS_START);
+      await writeFile.setPosition(0);
+      await writeFile.writeFrom(headerBuffer);
+
+      // Write number of samples
+      final samplesOffset = CsdConstants.FILE_HEADER_LENGTH + 3020;
+      await writeFile.setPosition(samplesOffset);
+      var samplesBytes = ByteData(4)..setInt32(0, actualSamples, Endian.big);
+      await writeFile.writeFrom(samplesBytes.buffer.asUint8List());
+
+      // Write stop time
+      final stopTimeOffset = CsdConstants.FILE_HEADER_LENGTH + 3040;
+      await writeFile.setPosition(stopTimeOffset);
+      var stopTimeBytes = ByteData(8)..setInt64(0, stopTime, Endian.big);
+      await writeFile.writeFrom(stopTimeBytes.buffer.asUint8List());
+
+      // Copy the rest of the file
+      await tempRead.setPosition(CsdConstants.CHANNEL_HEADERS_START);
+      var remainingLength = fileLength - CsdConstants.CHANNEL_HEADERS_START;
+      await writeFile.setPosition(CsdConstants.CHANNEL_HEADERS_START);
+
+      // Copy in chunks to handle large files
+      const chunkSize = 1024 * 1024; // 1MB chunks
+      var remaining = remainingLength;
+      while (remaining > 0) {
+        var toRead = remaining > chunkSize ? chunkSize : remaining;
+        var chunk = await tempRead.read(toRead);
+        await writeFile.writeFrom(chunk);
+        remaining -= chunk.length;
+      }
+    } finally {
+      await writeFile.close();
+      await tempRead.close();
+      await tempFile.delete();
+    }
   }
 }

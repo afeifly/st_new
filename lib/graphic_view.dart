@@ -454,6 +454,149 @@ class _GraphicViewState extends State<GraphicView> {
     }
   }
 
+  Widget _buildChart(List<FlSpot> data, int channelIndex) {
+    final min = widget.channelMins[channelIndex];
+    final max = widget.channelMaxs[channelIndex];
+
+    // Calculate y-axis range
+    double minY, maxY;
+    if (min == max || (min == 0 && max == 0)) {
+      // If min equals max or both are zero, create a range around the value
+      final baseValue = min == 0 ? 0 : min;
+      minY = baseValue - 50; // Extend 50 units below
+      maxY = baseValue + 50; // Extend 50 units above
+    } else {
+      // Add 10% padding to min/max for better visualization
+      final range = max - min;
+      final padding = range * 0.1;
+      minY = min - padding;
+      maxY = max + padding;
+    }
+
+    return LineChart(
+      LineChartData(
+        gridData: FlGridData(
+          show: true,
+          drawVerticalLine: true,
+          horizontalInterval: (maxY - minY) / 5,
+          verticalInterval: _calculateXAxisInterval(),
+        ),
+        titlesData: FlTitlesData(
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              getTitlesWidget: (value, meta) {
+                if (data.isEmpty) return const SizedBox.shrink();
+                return Text(
+                  _formatXAxisLabel(value),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 10),
+                );
+              },
+              interval: Math.max(0.1, _calculateXAxisInterval()),
+              reservedSize: 40,
+            ),
+          ),
+          leftTitles: AxisTitles(
+            axisNameWidget: Text(widget.unitTexts[channelIndex]),
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 50,
+              interval: Math.max(0.1, (maxY - minY) / 5),
+              getTitlesWidget: (value, meta) {
+                return Text(
+                  _formatValue(value),
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(fontSize: 10),
+                );
+              },
+            ),
+          ),
+          topTitles:
+              const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles:
+              const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+        borderData: FlBorderData(show: true),
+        minX: data.isEmpty ? 0 : data.first.x,
+        maxX: data.isEmpty ? 1 : data.last.x,
+        minY: minY.isFinite ? minY : 0,
+        maxY: maxY.isFinite ? maxY : 1,
+        lineBarsData: [
+          LineChartBarData(
+            spots: data,
+            isCurved: false, // Disable curve for better performance
+            color: Colors.blue,
+            dotData: const FlDotData(show: false),
+            belowBarData: BarAreaData(show: false),
+            preventCurveOverShooting: true,
+            isStrokeCapRound: true,
+          ),
+        ],
+        lineTouchData: LineTouchData(
+          enabled: true,
+          touchCallback: (FlTouchEvent event, LineTouchResponse? response) {
+            if (event is FlTapUpEvent) {
+              _showTimeRangeDialog();
+            }
+          },
+          touchTooltipData: LineTouchTooltipData(
+            fitInsideHorizontally: true,
+            fitInsideVertically: true,
+            tooltipPadding: const EdgeInsets.all(8),
+            tooltipBorder: BorderSide(
+              color: Colors.blueGrey.withOpacity(0.8),
+              width: 1,
+            ),
+            tooltipRoundedRadius: 8,
+            getTooltipItems: (List<LineBarSpot> touchedSpots) {
+              return touchedSpots.map((LineBarSpot touchedSpot) {
+                final value = touchedSpot.y;
+                final timeInSeconds = touchedSpot.x;
+                // Always use full date/time format for tooltip
+                final DateTime time = widget.startTime.add(
+                    Duration(milliseconds: (timeInSeconds * 1000).toInt()));
+                final timeStr = _fullFormatter.format(time);
+                return LineTooltipItem(
+                  '$timeStr\n'
+                  '${_formatValue(value)} ${widget.unitTexts[channelIndex]}',
+                  const TextStyle(
+                    color: Colors.amber,
+                    fontSize: 12,
+                    fontWeight: FontWeight.normal,
+                  ),
+                );
+              }).toList();
+            },
+          ),
+          getTouchedSpotIndicator:
+              (LineChartBarData barData, List<int> spotIndexes) {
+            return spotIndexes.map((spotIndex) {
+              return TouchedSpotIndicatorData(
+                FlLine(
+                  color: Colors.black45,
+                  strokeWidth: 2,
+                  dashArray: [5, 5],
+                ),
+                FlDotData(
+                  getDotPainter: (spot, percent, barData, index) {
+                    return FlDotCirclePainter(
+                      radius: 4,
+                      color: Colors.white,
+                      strokeWidth: 2,
+                      strokeColor: Colors.blue,
+                    );
+                  },
+                ),
+              );
+            }).toList();
+          },
+          handleBuiltInTouches: true,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // Calculate the available width for the chart
@@ -580,165 +723,7 @@ class _GraphicViewState extends State<GraphicView> {
                             ? const Center(
                                 child: Text('No data available'),
                               )
-                            : LayoutBuilder(
-                                builder: (context, constraints) {
-                                  if (constraints.maxWidth == 0 ||
-                                      constraints.maxHeight == 0) {
-                                    return const SizedBox.shrink();
-                                  }
-                                  return LineChart(
-                                    LineChartData(
-                                      gridData: FlGridData(
-                                        show: true,
-                                        drawVerticalLine: true,
-                                        horizontalInterval: (_maxY - _minY) / 5,
-                                        verticalInterval:
-                                            _calculateXAxisInterval(),
-                                      ),
-                                      titlesData: FlTitlesData(
-                                        bottomTitles: AxisTitles(
-                                          sideTitles: SideTitles(
-                                            showTitles: true,
-                                            getTitlesWidget: (value, meta) {
-                                              if (_chartData.isEmpty)
-                                                return const SizedBox.shrink();
-                                              return Text(
-                                                _formatXAxisLabel(value),
-                                                textAlign: TextAlign.center,
-                                                style: const TextStyle(
-                                                    fontSize: 10),
-                                              );
-                                            },
-                                            interval: Math.max(
-                                                0.1, _calculateXAxisInterval()),
-                                            reservedSize: 40,
-                                          ),
-                                        ),
-                                        leftTitles: AxisTitles(
-                                          axisNameWidget: Text(widget
-                                              .unitTexts[_selectedChannel]),
-                                          sideTitles: SideTitles(
-                                            showTitles: true,
-                                            reservedSize: 50,
-                                            interval: Math.max(
-                                                0.1, (_maxY - _minY) / 5),
-                                            getTitlesWidget: (value, meta) {
-                                              return Text(
-                                                _formatValue(value),
-                                                textAlign: TextAlign.right,
-                                                style: const TextStyle(
-                                                    fontSize: 10),
-                                              );
-                                            },
-                                          ),
-                                        ),
-                                        topTitles: const AxisTitles(
-                                          sideTitles:
-                                              SideTitles(showTitles: false),
-                                        ),
-                                        rightTitles: const AxisTitles(
-                                          sideTitles:
-                                              SideTitles(showTitles: false),
-                                        ),
-                                      ),
-                                      borderData: FlBorderData(show: true),
-                                      minX: _chartData.isEmpty
-                                          ? 0
-                                          : _chartData.first.x,
-                                      maxX: _chartData.isEmpty
-                                          ? 1
-                                          : _chartData.last.x,
-                                      minY: _minY.isFinite ? _minY : 0,
-                                      maxY: _maxY.isFinite ? _maxY : 1,
-                                      lineBarsData: [
-                                        LineChartBarData(
-                                          spots: _chartData,
-                                          isCurved:
-                                              false, // Disable curve for better performance
-                                          color: Colors.blue,
-                                          dotData: const FlDotData(show: false),
-                                          belowBarData:
-                                              BarAreaData(show: false),
-                                          preventCurveOverShooting: true,
-                                          isStrokeCapRound: true,
-                                        ),
-                                      ],
-                                      lineTouchData: LineTouchData(
-                                        enabled: true,
-                                        touchCallback: (FlTouchEvent event,
-                                            LineTouchResponse? response) {
-                                          if (event is FlTapUpEvent) {
-                                            _showTimeRangeDialog();
-                                          }
-                                        },
-                                        touchTooltipData: LineTouchTooltipData(
-                                          fitInsideHorizontally: true,
-                                          fitInsideVertically: true,
-                                          tooltipPadding:
-                                              const EdgeInsets.all(8),
-                                          tooltipBorder: BorderSide(
-                                            color: Colors.blueGrey
-                                                .withOpacity(0.8),
-                                            width: 1,
-                                          ),
-                                          tooltipRoundedRadius: 8,
-                                          getTooltipItems:
-                                              (List<LineBarSpot> touchedSpots) {
-                                            return touchedSpots
-                                                .map((LineBarSpot touchedSpot) {
-                                              final value = touchedSpot.y;
-                                              final timeInSeconds =
-                                                  touchedSpot.x;
-                                              // Always use full date/time format for tooltip
-                                              final DateTime time =
-                                                  widget.startTime.add(Duration(
-                                                      milliseconds:
-                                                          (timeInSeconds * 1000)
-                                                              .toInt()));
-                                              final timeStr =
-                                                  _fullFormatter.format(time);
-                                              return LineTooltipItem(
-                                                '$timeStr\n'
-                                                '${_formatValue(value)} ${widget.unitTexts[_selectedChannel]}',
-                                                const TextStyle(
-                                                  color: Colors.amber,
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.normal,
-                                                ),
-                                              );
-                                            }).toList();
-                                          },
-                                        ),
-                                        getTouchedSpotIndicator:
-                                            (LineChartBarData barData,
-                                                List<int> spotIndexes) {
-                                          return spotIndexes.map((spotIndex) {
-                                            return TouchedSpotIndicatorData(
-                                              FlLine(
-                                                color: Colors.black45,
-                                                strokeWidth: 2,
-                                                dashArray: [5, 5],
-                                              ),
-                                              FlDotData(
-                                                getDotPainter: (spot, percent,
-                                                    barData, index) {
-                                                  return FlDotCirclePainter(
-                                                    radius: 4,
-                                                    color: Colors.white,
-                                                    strokeWidth: 2,
-                                                    strokeColor: Colors.blue,
-                                                  );
-                                                },
-                                              ),
-                                            );
-                                          }).toList();
-                                        },
-                                        handleBuiltInTouches: true,
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
+                            : _buildChart(_chartData, _selectedChannel),
                       ),
                     ],
                   ),
