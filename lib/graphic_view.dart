@@ -4,6 +4,14 @@ import 'csd_file_handler.dart';
 import 'package:intl/intl.dart'; // Add this import for date formatting
 import 'dart:math' as Math;
 
+// Add these enums at the top of the file
+enum TimeRange {
+  hour,
+  daily,
+  monthly,
+  total,
+}
+
 class GraphicView extends StatefulWidget {
   final String filePath;
   final DateTime startTime;
@@ -42,10 +50,15 @@ class _GraphicViewState extends State<GraphicView> {
   double _maxY = 0;
   bool _isLongLabel = false;
   int _samplingStep = 1;
+  TimeRange _currentTimeRange = TimeRange.total;
+  DateTime? _rangeStartTime;
+  bool _isLoading = false;
 
   @override
   void initState() {
     super.initState();
+    _currentTimeRange = TimeRange.total; // Start with total view
+    _rangeStartTime = widget.startTime; // Initialize range start time
     _initializeChart();
   }
 
@@ -53,73 +66,213 @@ class _GraphicViewState extends State<GraphicView> {
     await _prepareChartData(_selectedChannel);
   }
 
-  Future<void> _prepareChartData(int channelIndex) async {
-    try {
-      print('Starting _prepareChartData for channel $channelIndex');
-      var csdFile = CsdFileHandler();
-      print('Created CsdFileHandler');
+  // Add this method to calculate the time-aligned range
+  Future<(DateTime, DateTime)> _getAlignedTimeRange(TimeRange range) async {
+    final startTime = widget.startTime;
+    var csdFile = CsdFileHandler();
+    await csdFile.load(widget.filePath);
+    final stopTime = csdFile.getStopTime();
+    await csdFile.close();
 
+    switch (range) {
+      case TimeRange.hour:
+        // Align to the start of the hour
+        final hourStart = DateTime(
+          startTime.year,
+          startTime.month,
+          startTime.day,
+          startTime.hour,
+        );
+        final hourEnd = hourStart.add(const Duration(hours: 1));
+        return (hourStart, hourEnd);
+
+      case TimeRange.daily:
+        final dayStart = DateTime(
+          startTime.year,
+          startTime.month,
+          startTime.day,
+        );
+        final dayEnd = dayStart.add(const Duration(days: 1));
+        return (dayStart, dayEnd);
+
+      case TimeRange.monthly:
+        final monthStart = DateTime(
+          startTime.year,
+          startTime.month,
+          1,
+        );
+        final monthEnd = DateTime(
+          startTime.year,
+          startTime.month + 1,
+          1,
+        );
+        return (monthStart, monthEnd);
+
+      case TimeRange.total:
+        return (startTime, stopTime);
+    }
+  }
+
+  Future<void> _prepareChartData(int channelIndex) async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      print('Starting to prepare chart data for channel $channelIndex');
+      var csdFile = CsdFileHandler();
       await csdFile.load(widget.filePath);
-      print('Loaded file');
 
       final totalSamples = csdFile.getProtocolHeader().numOfSamples;
-      _samplingStep = totalSamples > CsdFileHandler.MAX_DISPLAY_SAMPLES
-          ? (totalSamples / CsdFileHandler.MAX_DISPLAY_SAMPLES).ceil()
-          : 1;
 
-      print('\nSampling information:');
-      print('Total samples: $totalSamples');
+      // Calculate maximum points to display based on screen width
+      final screenWidth = MediaQuery.of(context).size.width;
+      final maxDisplayPoints = screenWidth ~/ 2; // 1 point per 2 pixels
+
+      DateTime rangeStart = _rangeStartTime ?? widget.startTime;
+      DateTime rangeEnd;
+
+      // Calculate range end based on current view
+      switch (_currentTimeRange) {
+        case TimeRange.hour:
+          rangeEnd = rangeStart.add(const Duration(hours: 1));
+        case TimeRange.daily:
+          rangeEnd = rangeStart.add(const Duration(days: 1));
+        case TimeRange.monthly:
+          rangeEnd = DateTime(
+            rangeStart.year,
+            rangeStart.month + 1,
+            1,
+          );
+        case TimeRange.total:
+          rangeStart = widget.startTime;
+          rangeEnd = csdFile.getStopTime();
+      }
+
+      print('Range start: $rangeStart');
+      print('Range end: $rangeEnd');
+
+      // Calculate indices based on sample rate
+      final startIndex = ((rangeStart.difference(widget.startTime).inSeconds) /
+              widget.sampleRate)
+          .floor();
+      final endIndex = ((rangeEnd.difference(widget.startTime).inSeconds) /
+              widget.sampleRate)
+          .floor();
+
+      print('Initial indices - Start: $startIndex, End: $endIndex');
+
+      // Ensure indices are within bounds
+      final actualStartIndex = startIndex.clamp(0, totalSamples - 1);
+      final actualEndIndex = endIndex.clamp(0, totalSamples - 1);
+
+      print('Clamped indices - Start: $actualStartIndex, End: $actualEndIndex');
+
+      if (actualStartIndex >= actualEndIndex) {
+        print('Invalid index range');
+        throw Exception('Invalid time range');
+      }
+
+      // Calculate sampling step to limit number of points
+      final rangeSamples = actualEndIndex - actualStartIndex + 1;
+      _samplingStep = (rangeSamples / maxDisplayPoints).ceil();
+      _samplingStep = Math.max(_samplingStep, 1);
+
+      print('Range samples: $rangeSamples');
       print('Sampling step: $_samplingStep');
-      print('Sample rate: ${widget.sampleRate} seconds');
-      print('Start time: ${widget.startTime}');
 
-      var chartRecords = await csdFile.getDataWithSampling(0, totalSamples - 1);
-      print('Finished reading data. Records length: ${chartRecords.length}');
-
-      if (!mounted) return;
-
-      _minY = widget.channelMins[channelIndex];
-      _maxY = widget.channelMaxs[channelIndex];
-      print('Set min/max: $_minY to $_maxY');
-
-      double padding = (_maxY - _minY) * 0.1;
-      _minY -= padding;
-      _maxY += padding;
-
-      if (!mounted) return;
-
-      print('Creating chart data points...');
-      final newChartData =
-          List.generate(chartRecords[channelIndex].length, (index) {
-        double timeInSeconds =
-            (index * _samplingStep) * widget.sampleRate.toDouble();
-        double value = chartRecords[channelIndex][index];
-        return FlSpot(timeInSeconds, value);
-      });
-      print('Created ${newChartData.length} data points');
+      // Get data with adjusted sampling
+      final channelData = await csdFile.getDataWithSampling(
+        actualStartIndex,
+        actualEndIndex,
+        samplingStep: _samplingStep, // Add this parameter to CsdFileHandler
+      );
 
       setState(() {
-        _chartData = newChartData;
-      });
-      print('Updated state with new chart data');
+        List<List<FlSpot>> segments = [[]];
+        int currentSegment = 0;
+        _minY = double.infinity;
+        _maxY = double.negativeInfinity;
 
-      print('Time range: 0 to ${_chartData.last.x} seconds');
-      print('Start time: ${_getTimeString(0)}');
-      print('End time: ${_getTimeString(_chartData.last.x)}');
+        // Process each data point
+        for (int i = 0; i < channelData[channelIndex].length; i++) {
+          final value = channelData[channelIndex][i];
 
-      await csdFile.close();
-      print('Closed file');
-    } catch (e, stackTrace) {
-      print('Error preparing chart data: $e');
-      print('Stack trace: $stackTrace');
-      if (mounted) {
-        setState(() {
-          _chartData = [const FlSpot(0, 0)];
+          // Handle special values
+          if (value == -9999.0 || value == -8888.0) {
+            // Use actual special values
+            if (segments[currentSegment].isNotEmpty) {
+              segments.add([]);
+              currentSegment++;
+            }
+            continue;
+          }
+
+          final timeOffset = Duration(
+              seconds:
+                  (actualStartIndex + i * _samplingStep) * widget.sampleRate);
+          final pointTime = widget.startTime.add(timeOffset);
+          final x = pointTime.difference(rangeStart).inSeconds / 3600.0;
+
+          segments[currentSegment].add(FlSpot(x, value));
+
+          if (value != -7777.0) {
+            // Assuming -7777.0 is DATA_SENSOR_CHANGE
+            _minY = Math.min(_minY, value);
+            _maxY = Math.max(_maxY, value);
+          }
+        }
+
+        // Add padding to Y-axis range
+        if (_minY != double.infinity && _maxY != double.negativeInfinity) {
+          final yRange = _maxY - _minY;
+          _minY -= yRange * 0.1;
+          _maxY += yRange * 0.1;
+        } else {
+          // Set default range if no valid data points
           _minY = 0;
           _maxY = 1;
-        });
-      }
+        }
+
+        // Update chart data
+        _chartData = segments.expand((segment) => segment).toList();
+        print('Created ${_chartData.length} chart points');
+      });
+
+      await csdFile.close();
+    } catch (e, stack) {
+      print('Error preparing chart data: $e');
+      print('Stack trace: $stack');
+      setState(() {
+        _chartData = [const FlSpot(0, 0)];
+        _minY = 0;
+        _maxY = 1;
+      });
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
     }
+  }
+
+  // Add this helper method to format x-axis labels based on time range
+  String _formatXAxisLabel(double value) {
+    // Convert hours to seconds and consider sample rate
+    final timeOffset =
+        Duration(seconds: (value * 3600).round()); // value is in hours
+    final dateTime =
+        _rangeStartTime?.add(timeOffset) ?? widget.startTime.add(timeOffset);
+
+    // Add debug print for label formatting
+    print(
+        'Formatting label for value $value -> ${_timeFormatter.format(dateTime)}');
+
+    return switch (_currentTimeRange) {
+      TimeRange.hour => _timeFormatter.format(dateTime),
+      TimeRange.daily => _timeFormatter.format(dateTime),
+      TimeRange.monthly => DateFormat('MM-dd').format(dateTime),
+      TimeRange.total => DateFormat('MM-dd\nHH:mm').format(dateTime),
+    };
   }
 
   String _getTimeString(double value) {
@@ -132,24 +285,15 @@ class _GraphicViewState extends State<GraphicView> {
       return _fullFormatter.format(time);
     }
 
-    // Allow 15 minutes tolerance around target hours (00:00, 06:00, 12:00, 18:00)
-    final int minutesIntoDay = time.hour * 60 + time.minute;
-    final targetHours = [0, 6, 12, 18];
-
-    for (int targetHour in targetHours) {
-      int targetMinutes = targetHour * 60;
-      // Increase tolerance to 15 minutes to catch more points
-      if ((minutesIntoDay - targetMinutes).abs() <= 15) {
-        final DateTime currentDate = DateTime(time.year, time.month, time.day);
-        if (_lastDate != currentDate) {
-          _lastDate = currentDate;
-          return _fullFormatter.format(time);
-        }
-        return '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
-      }
+    // Check if the date has changed
+    final DateTime currentDate = DateTime(time.year, time.month, time.day);
+    if (_lastDate != currentDate) {
+      _lastDate = currentDate;
+      return _fullFormatter.format(time);
     }
 
-    return '';
+    // Otherwise, just show the time
+    return _timeFormatter.format(time);
   }
 
   String _formatValue(double value) {
@@ -174,8 +318,150 @@ class _GraphicViewState extends State<GraphicView> {
     _prepareChartData(_selectedChannel);
   }
 
+  Future<void> _showTimeRangeDialog() async {
+    final result = await showDialog<TimeRange>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Select Time Range'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                title: const Text('Last Hour'),
+                leading: const Icon(Icons.access_time),
+                onTap: () => Navigator.pop(context, TimeRange.hour),
+              ),
+              ListTile(
+                title: const Text('Daily View'),
+                leading: const Icon(Icons.calendar_today),
+                onTap: () => Navigator.pop(context, TimeRange.daily),
+              ),
+              ListTile(
+                title: const Text('Monthly View'),
+                leading: const Icon(Icons.calendar_month),
+                onTap: () => Navigator.pop(context, TimeRange.monthly),
+              ),
+              ListTile(
+                title: const Text('Total View'),
+                leading: const Icon(Icons.all_inclusive),
+                onTap: () => Navigator.pop(context, TimeRange.total),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (result != null && result != _currentTimeRange) {
+      final (rangeStart, _) = await _getAlignedTimeRange(result);
+      setState(() {
+        _currentTimeRange = result;
+        _rangeStartTime = rangeStart;
+      });
+      await _prepareChartData(_selectedChannel);
+    }
+  }
+
+  double _calculateXAxisInterval() {
+    // Always provide a minimum interval
+    const double MIN_INTERVAL = 0.1; // 6 minutes
+
+    if (_chartData.isEmpty || _chartData.length == 1) {
+      return MIN_INTERVAL;
+    }
+
+    // Calculate total hours considering sample rate
+    double totalHours = (_chartData.last.x - _chartData.first.x);
+
+    if (totalHours <= 0) {
+      return MIN_INTERVAL;
+    }
+
+    // Calculate intervals based on time range and sample rate
+    double interval = switch (_currentTimeRange) {
+      TimeRange.hour => Math.max(MIN_INTERVAL, 0.25), // 15-minute intervals
+      TimeRange.daily => Math.max(2.0, totalHours / 12), // 12 intervals per day
+      TimeRange.monthly =>
+        Math.max(24.0, totalHours / 30), // 30 intervals per month
+      TimeRange.total => Math.max(24.0, totalHours / 10), // 10 intervals total
+    };
+
+    print('Time range: ${_currentTimeRange.name}');
+    print('Total hours: $totalHours');
+    print('Calculated interval: $interval');
+
+    return interval;
+  }
+
+  // Add these methods to handle time range navigation
+  Future<void> _moveTimeRange(bool forward) async {
+    var csdFile = CsdFileHandler();
+    await csdFile.load(widget.filePath);
+    final stopTime = csdFile.getStopTime();
+    await csdFile.close();
+
+    DateTime? newStartTime;
+    switch (_currentTimeRange) {
+      case TimeRange.hour:
+        newStartTime = _rangeStartTime?.add(
+          Duration(hours: forward ? 1 : -1),
+        );
+      case TimeRange.daily:
+        newStartTime = _rangeStartTime?.add(
+          Duration(days: forward ? 1 : -1),
+        );
+      case TimeRange.monthly:
+        // Add or subtract one month
+        if (_rangeStartTime != null) {
+          if (forward) {
+            newStartTime = DateTime(
+              _rangeStartTime!.year,
+              _rangeStartTime!.month + 1,
+              1,
+            );
+          } else {
+            newStartTime = DateTime(
+              _rangeStartTime!.year,
+              _rangeStartTime!.month - 1,
+              1,
+            );
+          }
+        }
+      case TimeRange.total:
+        return; // No navigation in total view
+    }
+
+    // Check if the new time is within valid range
+    if (newStartTime != null) {
+      if (newStartTime.isBefore(widget.startTime)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Already at the beginning of data')),
+        );
+        return;
+      }
+      if (newStartTime.isAfter(stopTime)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Already at the end of data')),
+        );
+        return;
+      }
+
+      setState(() {
+        _rangeStartTime = newStartTime;
+      });
+      await _prepareChartData(_selectedChannel);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Calculate the available width for the chart
+    final double chartWidth =
+        MediaQuery.of(context).size.width - 32; // Padding adjustment
+    final int maxLabels =
+        (chartWidth / 80).floor(); // Estimate max labels based on label width
+
     return Column(
       children: [
         Container(
@@ -228,138 +514,237 @@ class _GraphicViewState extends State<GraphicView> {
               border: Border.all(color: Colors.grey),
               borderRadius: BorderRadius.circular(8),
             ),
-            child: _chartData.length <= 1
-                ? const Center(child: CircularProgressIndicator())
-                : LineChart(
-                    LineChartData(
-                      gridData: FlGridData(
-                        show: true,
-                        drawVerticalLine: true,
-                        horizontalInterval: (_maxY - _minY) / 5,
-                        verticalInterval: _chartData.last.x / 10,
+            child: Column(
+              children: [
+                // Time range controls
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Time Range: ${_currentTimeRange.name.toUpperCase()}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
                       ),
-                      titlesData: FlTitlesData(
-                        bottomTitles: AxisTitles(
-                          axisNameWidget: const SizedBox.shrink(),
-                          sideTitles: SideTitles(
-                            showTitles: true,
-                            reservedSize: 40,
-                            interval: 3600 * 6, // 6 hours in seconds
-                            getTitlesWidget: (value, meta) {
-                              String timeStr = _getTimeString(value);
-                              if (timeStr.isEmpty) {
-                                return const SizedBox.shrink();
-                              }
-                              return SizedBox(
-                                width: timeStr.length > 8 ? 140 : 80,
-                                child: Text(
-                                  timeStr,
-                                  style: const TextStyle(fontSize: 10),
-                                  overflow: TextOverflow.ellipsis,
-                                  textAlign: TextAlign.center,
-                                ),
-                              );
-                            },
+                    ),
+                    Row(
+                      children: [
+                        if (_currentTimeRange != TimeRange.total) ...[
+                          IconButton(
+                            icon: const Icon(Icons.arrow_back),
+                            onPressed: () => _moveTimeRange(false),
+                            tooltip: 'Previous ${_currentTimeRange.name}',
                           ),
-                        ),
-                        leftTitles: AxisTitles(
-                          axisNameWidget:
-                              Text(widget.unitTexts[_selectedChannel]),
-                          sideTitles: SideTitles(
-                            showTitles: true,
-                            reservedSize: 50,
-                            interval: (_maxY - _minY) / 5,
-                            getTitlesWidget: (value, meta) {
-                              return Text(
-                                _formatValue(value),
-                                style: const TextStyle(fontSize: 10),
-                              );
-                            },
+                          IconButton(
+                            icon: const Icon(Icons.arrow_forward),
+                            onPressed: () => _moveTimeRange(true),
+                            tooltip: 'Next ${_currentTimeRange.name}',
                           ),
-                        ),
-                        topTitles: const AxisTitles(
-                          sideTitles: SideTitles(showTitles: false),
-                        ),
-                        rightTitles: const AxisTitles(
-                          sideTitles: SideTitles(showTitles: false),
-                        ),
-                      ),
-                      borderData: FlBorderData(show: true),
-                      minX: 0,
-                      maxX: _chartData.last.x,
-                      minY: _minY,
-                      maxY: _maxY,
-                      lineBarsData: [
-                        LineChartBarData(
-                          spots: _chartData,
-                          isCurved: true,
-                          curveSmoothness: 0.3,
-                          color: Colors.blue,
-                          dotData: const FlDotData(show: false),
-                          belowBarData: BarAreaData(show: false),
-                          preventCurveOverShooting: true,
-                          isStrokeCapRound: true,
+                          const SizedBox(width: 8),
+                        ],
+                        TextButton.icon(
+                          onPressed: _showTimeRangeDialog,
+                          icon: const Icon(Icons.access_time),
+                          label: const Text('Change Range'),
                         ),
                       ],
-                      lineTouchData: LineTouchData(
-                        enabled: true,
-                        touchTooltipData: LineTouchTooltipData(
-                          fitInsideHorizontally: true,
-                          fitInsideVertically: true,
-                          tooltipPadding: const EdgeInsets.all(8),
-                          tooltipBorder: BorderSide(
-                            color: Colors.blueGrey.withOpacity(0.8),
-                            width: 1,
-                          ),
-                          tooltipRoundedRadius: 8,
-                          getTooltipItems: (List<LineBarSpot> touchedSpots) {
-                            return touchedSpots.map((LineBarSpot touchedSpot) {
-                              final value = touchedSpot.y;
-                              final timeInSeconds = touchedSpot.x;
-                              // Always use full date/time format for tooltip
-                              final DateTime time = widget.startTime.add(
-                                  Duration(
-                                      milliseconds:
-                                          (timeInSeconds * 1000).toInt()));
-                              final timeStr = _fullFormatter.format(time);
-                              return LineTooltipItem(
-                                '$timeStr\n'
-                                '${_formatValue(value)} ${widget.unitTexts[_selectedChannel]}',
-                                const TextStyle(
-                                  color: Colors.black87,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.normal,
-                                ),
-                              );
-                            }).toList();
-                          },
+                    ),
+                  ],
+                ),
+                Expanded(
+                  child: Stack(
+                    children: [
+                      if (_isLoading)
+                        const Center(
+                          child: CircularProgressIndicator(),
                         ),
-                        getTouchedSpotIndicator:
-                            (LineChartBarData barData, List<int> spotIndexes) {
-                          return spotIndexes.map((spotIndex) {
-                            return TouchedSpotIndicatorData(
-                              FlLine(
-                                color: Colors.black45,
-                                strokeWidth: 2,
-                                dashArray: [5, 5],
+                      if (!_isLoading && _chartData.length > 1)
+                        Positioned.fill(
+                          bottom: 40, // Height of x-axis labels
+                          child: MouseRegion(
+                            cursor: SystemMouseCursors.click,
+                            child: GestureDetector(
+                              onTap: _showTimeRangeDialog,
+                              child: Container(
+                                color: Colors.transparent,
+                                height: 40,
+                                margin: const EdgeInsets.only(top: 8),
                               ),
-                              FlDotData(
-                                getDotPainter: (spot, percent, barData, index) {
-                                  return FlDotCirclePainter(
-                                    radius: 4,
-                                    color: Colors.white,
-                                    strokeWidth: 2,
-                                    strokeColor: Colors.blue,
+                            ),
+                          ),
+                        ),
+                      SizedBox(
+                        width: double.infinity,
+                        height: double.infinity,
+                        child: _chartData.length <= 1
+                            ? const Center(
+                                child: Text('No data available'),
+                              )
+                            : LayoutBuilder(
+                                builder: (context, constraints) {
+                                  if (constraints.maxWidth == 0 ||
+                                      constraints.maxHeight == 0) {
+                                    return const SizedBox.shrink();
+                                  }
+                                  return LineChart(
+                                    LineChartData(
+                                      gridData: FlGridData(
+                                        show: true,
+                                        drawVerticalLine: true,
+                                        horizontalInterval: (_maxY - _minY) / 5,
+                                        verticalInterval:
+                                            _calculateXAxisInterval(),
+                                      ),
+                                      titlesData: FlTitlesData(
+                                        bottomTitles: AxisTitles(
+                                          sideTitles: SideTitles(
+                                            showTitles: true,
+                                            getTitlesWidget: (value, meta) {
+                                              if (_chartData.isEmpty)
+                                                return const SizedBox.shrink();
+                                              return Text(
+                                                _formatXAxisLabel(value),
+                                                textAlign: TextAlign.center,
+                                                style: const TextStyle(
+                                                    fontSize: 10),
+                                              );
+                                            },
+                                            interval: Math.max(
+                                                0.1, _calculateXAxisInterval()),
+                                            reservedSize: 40,
+                                          ),
+                                        ),
+                                        leftTitles: AxisTitles(
+                                          axisNameWidget: Text(widget
+                                              .unitTexts[_selectedChannel]),
+                                          sideTitles: SideTitles(
+                                            showTitles: true,
+                                            reservedSize: 50,
+                                            interval: Math.max(
+                                                0.1, (_maxY - _minY) / 5),
+                                            getTitlesWidget: (value, meta) {
+                                              return Text(
+                                                _formatValue(value),
+                                                textAlign: TextAlign.right,
+                                                style: const TextStyle(
+                                                    fontSize: 10),
+                                              );
+                                            },
+                                          ),
+                                        ),
+                                        topTitles: const AxisTitles(
+                                          sideTitles:
+                                              SideTitles(showTitles: false),
+                                        ),
+                                        rightTitles: const AxisTitles(
+                                          sideTitles:
+                                              SideTitles(showTitles: false),
+                                        ),
+                                      ),
+                                      borderData: FlBorderData(show: true),
+                                      minX: _chartData.isEmpty
+                                          ? 0
+                                          : _chartData.first.x,
+                                      maxX: _chartData.isEmpty
+                                          ? 1
+                                          : _chartData.last.x,
+                                      minY: _minY.isFinite ? _minY : 0,
+                                      maxY: _maxY.isFinite ? _maxY : 1,
+                                      lineBarsData: [
+                                        LineChartBarData(
+                                          spots: _chartData,
+                                          isCurved:
+                                              false, // Disable curve for better performance
+                                          color: Colors.blue,
+                                          dotData: const FlDotData(show: false),
+                                          belowBarData:
+                                              BarAreaData(show: false),
+                                          preventCurveOverShooting: true,
+                                          isStrokeCapRound: true,
+                                        ),
+                                      ],
+                                      lineTouchData: LineTouchData(
+                                        enabled: true,
+                                        touchCallback: (FlTouchEvent event,
+                                            LineTouchResponse? response) {
+                                          if (event is FlTapUpEvent) {
+                                            _showTimeRangeDialog();
+                                          }
+                                        },
+                                        touchTooltipData: LineTouchTooltipData(
+                                          fitInsideHorizontally: true,
+                                          fitInsideVertically: true,
+                                          tooltipPadding:
+                                              const EdgeInsets.all(8),
+                                          tooltipBorder: BorderSide(
+                                            color: Colors.blueGrey
+                                                .withOpacity(0.8),
+                                            width: 1,
+                                          ),
+                                          tooltipRoundedRadius: 8,
+                                          getTooltipItems:
+                                              (List<LineBarSpot> touchedSpots) {
+                                            return touchedSpots
+                                                .map((LineBarSpot touchedSpot) {
+                                              final value = touchedSpot.y;
+                                              final timeInSeconds =
+                                                  touchedSpot.x;
+                                              // Always use full date/time format for tooltip
+                                              final DateTime time =
+                                                  widget.startTime.add(Duration(
+                                                      milliseconds:
+                                                          (timeInSeconds * 1000)
+                                                              .toInt()));
+                                              final timeStr =
+                                                  _fullFormatter.format(time);
+                                              return LineTooltipItem(
+                                                '$timeStr\n'
+                                                '${_formatValue(value)} ${widget.unitTexts[_selectedChannel]}',
+                                                const TextStyle(
+                                                  color: Colors.amber,
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.normal,
+                                                ),
+                                              );
+                                            }).toList();
+                                          },
+                                        ),
+                                        getTouchedSpotIndicator:
+                                            (LineChartBarData barData,
+                                                List<int> spotIndexes) {
+                                          return spotIndexes.map((spotIndex) {
+                                            return TouchedSpotIndicatorData(
+                                              FlLine(
+                                                color: Colors.black45,
+                                                strokeWidth: 2,
+                                                dashArray: [5, 5],
+                                              ),
+                                              FlDotData(
+                                                getDotPainter: (spot, percent,
+                                                    barData, index) {
+                                                  return FlDotCirclePainter(
+                                                    radius: 4,
+                                                    color: Colors.white,
+                                                    strokeWidth: 2,
+                                                    strokeColor: Colors.blue,
+                                                  );
+                                                },
+                                              ),
+                                            );
+                                          }).toList();
+                                        },
+                                        handleBuiltInTouches: true,
+                                      ),
+                                    ),
                                   );
                                 },
                               ),
-                            );
-                          }).toList();
-                        },
-                        handleBuiltInTouches: true,
                       ),
-                    ),
+                    ],
                   ),
+                ),
+              ],
+            ),
           ),
         ),
       ],

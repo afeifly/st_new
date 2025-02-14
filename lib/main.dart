@@ -5,6 +5,7 @@ import 'csd_file_handler.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'graphic_view.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const MyApp());
@@ -16,7 +17,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'CSD File Reader',
+      title: 'CSD Handler',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
@@ -128,7 +129,9 @@ class _MyHomePageState extends State<MyHomePage> {
         _channelMaxs = csdFile.getChannelMaxs();
 
         _recordData = List.generate(10, (recordIndex) {
-          final timestamp = _startTime!.add(Duration(seconds: recordIndex));
+          // Calculate timestamp using sampleRate
+          final timestamp =
+              _startTime!.add(Duration(seconds: recordIndex * _sampleRate));
           return {
             'Record': DateFormat('yyyy-MM-dd HH:mm:ss').format(timestamp),
             ...Map.fromEntries(
@@ -150,6 +153,8 @@ class _MyHomePageState extends State<MyHomePage> {
           _fileInfo = '''
 File Information:
 Number of channels: $_numChannels
+Number of records: ${protocolHeader.numOfSamples}
+Sample rate: ${protocolHeader.sampleRate} 
 Start time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(_startTime!)}
 Stop time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(stopTime)}''';
         });
@@ -179,6 +184,26 @@ Stack trace:
 $stackTrace''';
       });
     }
+  }
+
+  Future<void> _closeFile() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.remove('filePath');
+    setState(() {
+      _fileInfo = 'No file loaded';
+      _recordData.clear();
+      _showChart = false;
+      _lastLoadedFilePath = null;
+      _chartData.clear();
+      _startTime = null;
+      _numChannels = 0;
+      _resolutions.clear();
+      _channelDescriptions.clear();
+      _unitTexts.clear();
+      _sampleRate = 1;
+      _channelMins.clear();
+      _channelMaxs.clear();
+    });
   }
 
   void _prepareChartData(int channelIndex) async {
@@ -226,10 +251,37 @@ $stackTrace''';
           children: [
             Row(
               children: [
-                ElevatedButton.icon(
-                  onPressed: _openAndReadCsdFile,
-                  icon: const Icon(Icons.folder_open),
-                  label: const Text('Open CSD File'),
+                PopupMenuButton<String>(
+                  onSelected: (String value) {
+                    if (value == 'open') {
+                      _openAndReadCsdFile();
+                    } else if (value == 'close') {
+                      _closeFile();
+                    }
+                  },
+                  itemBuilder: (BuildContext context) =>
+                      <PopupMenuEntry<String>>[
+                    const PopupMenuItem<String>(
+                      value: 'open',
+                      child: ListTile(
+                        leading: Icon(Icons.folder_open),
+                        title: Text('Open CSD File'),
+                      ),
+                    ),
+                    if (_lastLoadedFilePath != null)
+                      const PopupMenuItem<String>(
+                        value: 'close',
+                        child: ListTile(
+                          leading: Icon(Icons.close),
+                          title: Text('Close File'),
+                        ),
+                      ),
+                  ],
+                  child: ElevatedButton.icon(
+                    onPressed: null, // Disable direct button action
+                    icon: const Icon(Icons.folder_open),
+                    label: const Text('Open File'),
+                  ),
                 ),
                 const SizedBox(width: 16),
                 if (_lastLoadedFilePath != null) ...[

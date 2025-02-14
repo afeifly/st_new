@@ -376,20 +376,26 @@ class CsdFileHandler {
   }
 
   /// Gets measurement data with sampling for large files
-  Future<List<List<double>>> getDataWithSampling(int start, int end) async {
+  Future<List<List<double>>> getDataWithSampling(int start, int end,
+      {int? samplingStep}) async {
     if (_protocolHeader == null) {
       throw StateError('File not loaded');
     }
 
     final totalSamples = _protocolHeader!.numOfSamples;
     print('Total samples in file: $totalSamples');
+    print('Requested range: $start to $end');
 
-    // Calculate sampling step
-    int samplingStep = 1;
-    if (totalSamples > MAX_DISPLAY_SAMPLES) {
-      samplingStep = (totalSamples / MAX_DISPLAY_SAMPLES).ceil();
-    }
-    print('Using sampling step: $samplingStep');
+    // Ensure start and end are within bounds
+    start = start.clamp(0, totalSamples - 1);
+    end = end.clamp(0, totalSamples - 1);
+
+    // Calculate actual number of samples to read
+    final rangeSamples = end - start + 1;
+
+    // Calculate sampling step for the requested range
+    final actualSamplingStep = samplingStep ?? 1;
+    print('Using sampling step: $actualSamplingStep');
 
     final numChannels = _protocolHeader!.numOfChannels;
     final recordLength = CsdConstants.RECORD_ID_LENGTH +
@@ -397,24 +403,31 @@ class CsdFileHandler {
 
     final dataStartPosition = CsdConstants.CHANNEL_HEADERS_START +
         (CsdConstants.CHANNEL_HEADER_LENGTH * numChannels);
-    print('Data starts at position: $dataStartPosition');
+
+    // Calculate the starting position for the requested range
+    final rangeStartPosition = dataStartPosition + (start * recordLength);
+    print('Data starts at position: $rangeStartPosition');
 
     List<List<double>> result = List.generate(numChannels, (_) => []);
 
-    final actualSamples = (totalSamples / samplingStep).floor();
+    final actualSamples = ((end - start) / actualSamplingStep).floor() + 1;
     print('Will read $actualSamples samples');
 
     int progressCounter = 0;
     final progressInterval = actualSamples ~/ 10; // Report progress every 10%
 
-    for (int i = 0; i < totalSamples; i += samplingStep) {
+    // Read only the requested range of data
+    for (int i = 0; i < actualSamples; i++) {
       if (progressCounter % progressInterval == 0) {
         print(
             'Reading progress: ${(progressCounter / actualSamples * 100).toStringAsFixed(1)}%');
       }
       progressCounter++;
 
-      final position = dataStartPosition + (i * recordLength);
+      final sampleIndex = start + (i * actualSamplingStep);
+      if (sampleIndex > end) break;
+
+      final position = dataStartPosition + (sampleIndex * recordLength);
       await _file.setPosition(position);
 
       var buffer = await _file.read(recordLength);
