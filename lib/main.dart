@@ -80,7 +80,6 @@ class _MyHomePageState extends State<MyHomePage> {
       );
 
       if (result == null) {
-        print('No file selected');
         setState(() {
           _fileInfo = 'No file selected';
         });
@@ -89,7 +88,6 @@ class _MyHomePageState extends State<MyHomePage> {
 
       String filePath = result.files.single.path!;
       _lastLoadedFilePath = filePath;
-      print('Selected file path: $filePath');
 
       File file = File(filePath);
       if (!await file.exists()) {
@@ -99,26 +97,14 @@ class _MyHomePageState extends State<MyHomePage> {
         return;
       }
 
-      int fileSize = await file.length();
-      print('File size: ${fileSize} bytes');
-
       try {
         await file.openRead().first;
-        print('File is readable');
       } catch (e) {
-        print('File permission error: $e');
         setState(() {
           _fileInfo =
               'Error: Cannot read file (permission denied)\nPath: $filePath\nError: $e';
         });
         return;
-      }
-
-      try {
-        var bytes = await file.openRead().take(10).toList();
-        print('First few bytes: $bytes');
-      } catch (e) {
-        print('Error reading file content: $e');
       }
 
       var csdFile = CsdFileHandler();
@@ -191,7 +177,6 @@ Stop time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(stopTime)}''';
           _fileInfo = '''
 Error loading file:
 Path: $filePath
-File size: $fileSize bytes
 Error: $e
 Stack trace: ${StackTrace.current}''';
         });
@@ -245,11 +230,6 @@ $stackTrace''';
         throw Exception('No valid chart data available.');
       }
 
-      // Add debug prints
-      print('Preparing chart data for channel: $channelIndex');
-      print('Chart records length: ${chartRecords.length}');
-      print('First few values: ${chartRecords[channelIndex].take(5)}');
-
       setState(() {
         _chartData = List.generate(100, (index) {
           double timeInSeconds = index.toDouble();
@@ -257,9 +237,6 @@ $stackTrace''';
           return FlSpot(timeInSeconds, value);
         });
       });
-
-      // Add debug print
-      print('Chart data points: ${_chartData.take(5)}');
 
       await csdFile.close();
     } catch (e, stackTrace) {

@@ -132,7 +132,6 @@ class _GraphicViewState extends State<GraphicView> {
     });
 
     try {
-      print('Starting to prepare chart data for channel $channelIndex');
       var csdFile = CsdFileHandler();
       await csdFile.load(widget.filePath);
 
@@ -162,9 +161,6 @@ class _GraphicViewState extends State<GraphicView> {
           rangeEnd = csdFile.getStopTime();
       }
 
-      print('Range start: $rangeStart');
-      print('Range end: $rangeEnd');
-
       // Calculate indices based on sample rate
       final startIndex = ((rangeStart.difference(widget.startTime).inSeconds) /
               widget.sampleRate)
@@ -173,16 +169,11 @@ class _GraphicViewState extends State<GraphicView> {
               widget.sampleRate)
           .floor();
 
-      print('Initial indices - Start: $startIndex, End: $endIndex');
-
       // Ensure indices are within bounds
       final actualStartIndex = startIndex.clamp(0, totalSamples - 1);
       final actualEndIndex = endIndex.clamp(0, totalSamples - 1);
 
-      print('Clamped indices - Start: $actualStartIndex, End: $actualEndIndex');
-
       if (actualStartIndex >= actualEndIndex) {
-        print('Invalid index range');
         throw Exception('Invalid time range');
       }
 
@@ -190,9 +181,6 @@ class _GraphicViewState extends State<GraphicView> {
       final rangeSamples = actualEndIndex - actualStartIndex + 1;
       _samplingStep = (rangeSamples / maxDisplayPoints).ceil();
       _samplingStep = Math.max(_samplingStep, 1);
-
-      print('Range samples: $rangeSamples');
-      print('Sampling step: $_samplingStep');
 
       // Get data with adjusted sampling
       final channelData = await csdFile.getDataWithSampling(
@@ -249,13 +237,10 @@ class _GraphicViewState extends State<GraphicView> {
 
         // Update chart data
         _chartData = segments.expand((segment) => segment).toList();
-        print('Created ${_chartData.length} chart points');
       });
 
       await csdFile.close();
     } catch (e, stack) {
-      print('Error preparing chart data: $e');
-      print('Stack trace: $stack');
       setState(() {
         _chartData = [const FlSpot(0, 0)];
         _minY = 0;
@@ -270,15 +255,9 @@ class _GraphicViewState extends State<GraphicView> {
 
   // Add this helper method to format x-axis labels based on time range
   String _formatXAxisLabel(double value) {
-    // Convert hours to seconds and consider sample rate
-    final timeOffset =
-        Duration(seconds: (value * 3600).round()); // value is in hours
+    final timeOffset = Duration(seconds: (value * 3600).round());
     final dateTime =
         _rangeStartTime?.add(timeOffset) ?? widget.startTime.add(timeOffset);
-
-    // Add debug print for label formatting
-    print(
-        'Formatting label for value $value -> ${_timeFormatter.format(dateTime)}');
 
     return switch (_currentTimeRange) {
       TimeRange.hour => _timeFormatter.format(dateTime),
@@ -383,10 +362,6 @@ class _GraphicViewState extends State<GraphicView> {
         Math.max(24.0, totalHours / 30), // 30 intervals per month
       TimeRange.total => Math.max(24.0, totalHours / 10), // 10 intervals total
     };
-
-    print('Time range: ${_currentTimeRange.name}');
-    print('Total hours: $totalHours');
-    print('Calculated interval: $interval');
 
     return interval;
   }

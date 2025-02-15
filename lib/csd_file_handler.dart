@@ -165,19 +165,14 @@ class CsdFileHandler {
   /// Opens a CSD file for reading
   Future<void> load(String filePath) async {
     _filePath = filePath;
-    print('Opening file: $_filePath');
     _file = await File(filePath).open();
 
     try {
-      print('Reading file info...');
       await _readFileInfo();
-
-      print('Reading protocol header...');
       try {
         await _readProtocolHeader();
       } catch (e) {
         if (e is FormatException) {
-          print(e.message);
           // Create an empty protocol header with valid channels but 0 samples
           _protocolHeader = CsdProtocolHeader(
             pref: 0,
@@ -212,13 +207,10 @@ class CsdFileHandler {
       // Continue with channel headers even if samples=0
       final numChannels = _protocolHeader!.numOfChannels;
       if (numChannels > 0) {
-        print('Reading channel headers...');
         await _readChannelHeaders();
       }
     } catch (e) {
-      if (e is FormatException) {
-        print(e.message);
-      } else {
+      if (e is! FormatException) {
         rethrow;
       }
     }
@@ -247,7 +239,6 @@ class CsdFileHandler {
     var buffer = await _file.read(CsdConstants.PROTOCOL_HEADER_LENGTH);
     var data = ByteData.sublistView(buffer);
 
-    // Debug print the raw values
     final rawNumDevices = data.getInt32(3012, Endian.big);
     final rawNumChannels = data.getInt32(3016, Endian.big);
     final rawNumSamples = data.getInt32(3020, Endian.big);
@@ -257,20 +248,11 @@ class CsdFileHandler {
 
     // Validate timestamps
     if (rawStartTime > 8640000000000000 || rawStartTime < -8640000000000000) {
-      print('Warning: Invalid start time: $rawStartTime, defaulting to 0');
       rawStartTime = 0;
     }
     if (rawStopTime > 8640000000000000 || rawStopTime < -8640000000000000) {
-      print('Warning: Invalid stop time: $rawStopTime, defaulting to 0');
       rawStopTime = 0;
     }
-
-    print('Raw protocol header values:');
-    print('- Number of channels: $rawNumChannels');
-    print('- Number of samples: $rawNumSamples');
-    print('- Sample rate (raw): $rawSampleRate');
-    print('- Start time: ${DateTime.fromMillisecondsSinceEpoch(rawStartTime)}');
-    print('- Stop time: ${DateTime.fromMillisecondsSinceEpoch(rawStopTime)}');
 
     // Create protocol header with the raw values
     _protocolHeader = CsdProtocolHeader(
@@ -302,11 +284,7 @@ class CsdFileHandler {
     );
 
     // Log warning instead of throwing exception
-    if (rawNumChannels <= 0 || rawNumSamples <= 0) {
-      print(
-          'Warning: Invalid protocol header values: channels=$rawNumChannels, samples=$rawNumSamples');
-      print('Using default values: channels=9, samples=0');
-    }
+    if (rawNumChannels <= 0 || rawNumSamples <= 0) {}
   }
 
   /// Reads all channel headers
@@ -330,7 +308,6 @@ class CsdFileHandler {
         try {
           var rawBuffer = await _file.read(CsdConstants.CHANNEL_HEADER_LENGTH);
           if (rawBuffer.length < CsdConstants.CHANNEL_HEADER_LENGTH) {
-            print('Warning: Incomplete channel header data for channel $i');
             break;
           }
           var buffer = Uint8List.fromList(rawBuffer);
@@ -404,12 +381,10 @@ class CsdFileHandler {
                 buffer.sublist(pos + 40, pos + 48).toList(), // 8 bytes
           ));
         } catch (e) {
-          print('Warning: Failed to read channel header $i: $e');
           break;
         }
       }
     } catch (e) {
-      print('Warning: Failed to read channel headers: $e');
       _channelHeaders = [];
     }
   }
@@ -450,41 +425,29 @@ class CsdFileHandler {
   Future<List<List<double>>> getDataWithSampling(int start, int end,
       {int? samplingStep}) async {
     if (_protocolHeader == null) {
-      return []; // Return empty list if protocol header is not loaded
+      return [];
     }
 
     final numChannels = _protocolHeader!.numOfChannels;
     final totalSamples = _protocolHeader!.numOfSamples;
 
-    // If we have 0 samples, return empty arrays for each channel
     if (totalSamples <= 0) {
-      print('Warning: No samples available.');
       return List.generate(numChannels, (_) => []);
     }
 
-    // Ensure start and end are valid integers
     start = start.clamp(0, totalSamples - 1);
     end = end.clamp(0, totalSamples - 1);
 
-    // If end is less than start, return empty data
     if (end < start) {
-      print('Warning: Invalid range: start=$start, end=$end');
       return List.generate(numChannels, (_) => []);
     }
 
-    print('Total samples in file: $totalSamples');
-    print('Adjusted range: $start to $end');
-
-    // Calculate actual number of samples to read
     final rangeSamples = end - start + 1;
     if (rangeSamples <= 0) {
-      print('Warning: Invalid range samples: $rangeSamples');
       return List.generate(numChannels, (_) => []);
     }
 
-    // Calculate sampling step for the requested range
     final actualSamplingStep = Math.max(1, samplingStep ?? 1);
-    print('Using sampling step: $actualSamplingStep');
 
     final recordLength = CsdConstants.RECORD_ID_LENGTH +
         (CsdConstants.CHANNEL_VALUE_LENGTH * numChannels);
@@ -492,26 +455,13 @@ class CsdFileHandler {
     final dataStartPosition = CsdConstants.CHANNEL_HEADERS_START +
         (CsdConstants.CHANNEL_HEADER_LENGTH * numChannels);
 
-    // Calculate the starting position for the requested range
     final rangeStartPosition = dataStartPosition + (start * recordLength);
-    print('Data starts at position: $rangeStartPosition');
 
     List<List<double>> result = List.generate(numChannels, (_) => []);
 
     final actualSamples = ((end - start) / actualSamplingStep).floor() + 1;
-    print('Will read $actualSamples samples');
 
-    int progressCounter = 0;
-    final progressInterval = actualSamples ~/ 10; // Report progress every 10%
-
-    // Read only the requested range of data
     for (int i = 0; i < actualSamples; i++) {
-      if (progressCounter % progressInterval == 0) {
-        print(
-            'Reading progress: ${(progressCounter / actualSamples * 100).toStringAsFixed(1)}%');
-      }
-      progressCounter++;
-
       final sampleIndex = start + (i * actualSamplingStep);
       if (sampleIndex > end) break;
 
@@ -520,7 +470,6 @@ class CsdFileHandler {
 
       var buffer = await _file.read(recordLength);
       if (buffer.length < recordLength) {
-        print('Warning: Incomplete data record at sample index $sampleIndex');
         break;
       }
       var data = ByteData.sublistView(Uint8List.fromList(buffer));
@@ -533,7 +482,6 @@ class CsdFileHandler {
       }
     }
 
-    print('Finished reading data');
     return result;
   }
 
@@ -581,12 +529,10 @@ class CsdFileHandler {
     try {
       return utf8.decode(bytes).trim();
     } catch (e) {
-      print('Warning: UTF-8 decode failed, falling back to ASCII');
       try {
         return String.fromCharCodes(bytes.where((b) => b > 0 && b < 128))
             .trim();
       } catch (e) {
-        print('Warning: ASCII decode failed, returning default value');
         return defaultValue;
       }
     }
