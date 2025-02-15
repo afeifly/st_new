@@ -434,13 +434,13 @@ Stop time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStopTime)}''';
                         onPressed: null,
                         style: ElevatedButton.styleFrom(
                           padding: const EdgeInsets.symmetric(horizontal: 8),
-                          backgroundColor:
-                              Theme.of(context).colorScheme.surface,
+                          backgroundColor: Colors.transparent,
+                          elevation: 0, // Remove button shadow
                         ),
                         child: DropdownButtonHideUnderline(
                           child: DropdownButton<int>(
                             value: _selectedChannel,
-                            isDense: true, // Make the dropdown more compact
+                            isDense: true,
                             items: List.generate(
                               _numChannels,
                               (index) => DropdownMenuItem(

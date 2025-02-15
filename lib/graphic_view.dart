@@ -536,7 +536,17 @@ class _GraphicViewState extends State<GraphicView> {
           rightTitles:
               const AxisTitles(sideTitles: SideTitles(showTitles: false)),
         ),
-        borderData: FlBorderData(show: true),
+        borderData: FlBorderData(
+          show: true,
+          border: const Border(
+            left: BorderSide(color: Colors.grey),
+            bottom: BorderSide(color: Colors.grey),
+            top: BorderSide(
+                color: Colors.transparent), // Make top border transparent
+            right: BorderSide(
+                color: Colors.transparent), // Make right border transparent
+          ),
+        ),
         minX: data.isEmpty ? 0 : data.first.x,
         maxX: data.isEmpty ? 1 : data.last.x,
         minY: minY.isFinite ? minY : 0,
