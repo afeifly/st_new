@@ -37,6 +37,7 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   String _fileInfo = 'No file loaded';
+  CsdProtocolHeader? protocolHeader;
   List<Map<String, dynamic>> _recordData = [];
   bool _showChart = false;
   int _selectedChannel = 0;
@@ -56,6 +57,7 @@ class _MyHomePageState extends State<MyHomePage> {
   bool _isLoadingRecords = false;
   int _totalPages = 0;
   double _sliderPosition = 0.0;
+  int _actualSamples = 0;
 
   // Add this method to format values based on resolution
   String _formatValue(dynamic value, int resolution) {
@@ -117,7 +119,7 @@ class _MyHomePageState extends State<MyHomePage> {
       var csdFile = CsdFileHandler();
       try {
         await csdFile.load(filePath);
-        final protocolHeader = csdFile.getProtocolHeader();
+        protocolHeader = csdFile.getProtocolHeader();
         _lastLoadedFilePath = filePath;
         _startTime = csdFile.getStartTime();
         _numChannels = csdFile.getNumOfChannels();
@@ -125,18 +127,27 @@ class _MyHomePageState extends State<MyHomePage> {
         _resolutions = csdFile.getResolutions();
         _channelDescriptions = csdFile.getChannelDescriptions();
         _unitTexts = csdFile.getUnitTexts();
-        _sampleRate = protocolHeader.sampleRate;
+        _sampleRate = protocolHeader!.sampleRate;
         _channelMins = csdFile.getChannelMins();
         _channelMaxs = csdFile.getChannelMaxs();
 
         // Calculate total pages
-        _totalPages =
-            ((protocolHeader.numOfSamples - 1) ~/ _recordsPerPage) + 1;
+        _totalPages = (protocolHeader!.numOfSamples + _recordsPerPage - 1) ~/
+            _recordsPerPage;
+
+        // Calculate actual samples once when opening file
+        final fileSize = await file.length();
+        final headerSize = CsdConstants.CHANNEL_HEADERS_START +
+            (CsdConstants.CHANNEL_HEADER_LENGTH * _numChannels);
+        final recordLength = CsdConstants.RECORD_ID_LENGTH +
+            (CsdConstants.CHANNEL_VALUE_LENGTH * _numChannels);
+        final dataSize = fileSize - headerSize;
+        _actualSamples = (dataSize / recordLength).floor();
 
         setState(() {
           _fileInfo = '''
-Number of channels: $_numChannels          Sample rate: ${protocolHeader.sampleRate}
-Number of records: ${protocolHeader.numOfSamples}
+Number of channels: $_numChannels          Sample rate: ${protocolHeader!.sampleRate}
+Number of records: ${protocolHeader!.numOfSamples}
 Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(_startTime!)} - ${DateFormat('yyyy-MM-dd HH:mm:ss').format(stopTime)}''';
           _currentPage = 0;
           _recordData.clear();
@@ -261,10 +272,19 @@ $stackTrace''';
 
       await csdFile.close();
 
+      // Update protocol header with new sample count
+      protocolHeader = await csdFile.getProtocolHeader();
+      _totalPages = (actualSamples + _recordsPerPage - 1) ~/ _recordsPerPage;
+      _actualSamples = actualSamples;
+
       setState(() {
         _fileInfo += rangeInfo;
+        // Update the file info to reflect the fix
+        _fileInfo = _fileInfo.replaceFirst(
+            'Number of records: ', 'Number of records (fixed): ');
       });
 
+      // Reload the file to update all the data
       await _reloadCurrentFile();
     } catch (e) {
       setState(() {
@@ -438,6 +458,21 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
     }
   }
 
+  // Add this method to check if record count is valid
+  bool _hasRecordCountMismatch() {
+    if (_lastLoadedFilePath == null) return false;
+
+    final fileSize = File(_lastLoadedFilePath!).lengthSync();
+    final headerSize = CsdConstants.CHANNEL_HEADERS_START +
+        (CsdConstants.CHANNEL_HEADER_LENGTH * _numChannels);
+    final recordLength = CsdConstants.RECORD_ID_LENGTH +
+        (CsdConstants.CHANNEL_VALUE_LENGTH * _numChannels);
+    final dataSize = fileSize - headerSize;
+    final actualSamples = (dataSize / recordLength).floor();
+
+    return actualSamples != _totalPages * _recordsPerPage;
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool hasError = _fileInfo.contains('Error') ||
@@ -544,15 +579,17 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
                   : Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
-                          'File Information:',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
+                        if (_lastLoadedFilePath != null) ...[
+                          const Text(
+                            'File Information:',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 10),
-                        _buildFileInfo(),
+                          const SizedBox(height: 10),
+                          _buildFileInfo(),
+                        ],
                         if (_recordData.isNotEmpty && !hasError) ...[
                           const SizedBox(height: 20),
                           Expanded(
@@ -568,8 +605,13 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
     );
   }
 
-  // Modify the file info section in the build method
+  // Update the file info display
   Widget _buildFileInfo() {
+    if (_lastLoadedFilePath == null) return const SizedBox.shrink();
+
+    // Use protocol header's numOfSamples instead of calculating from pages
+    final needsFix = (_actualSamples - protocolHeader!.numOfSamples).abs() > 1;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -580,14 +622,66 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
             border: Border.all(color: Colors.grey),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: Text(_fileInfo),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Number of channels: $_numChannels          Sample rate: $_sampleRate',
+                  ),
+                  if (needsFix)
+                    ElevatedButton.icon(
+                      onPressed: _fixFileData,
+                      icon: const Icon(Icons.build, color: Colors.white),
+                      label: const Text('Fix File'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                ],
+              ),
+              Row(
+                children: [
+                  const Text(
+                    'Number of records: ',
+                  ),
+                  Text(
+                    '${protocolHeader!.numOfSamples}',
+                    style: TextStyle(
+                      color: needsFix ? Colors.red : null,
+                      fontWeight: needsFix ? FontWeight.bold : null,
+                    ),
+                  ),
+                  if (needsFix) ...[
+                    Text(
+                      ' (actual: $_actualSamples)',
+                      style: const TextStyle(
+                        color: Colors.red,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              Text(
+                'Time period: ${_startTime != null ? DateFormat('yyyy-MM-dd HH:mm:ss').format(_startTime!) : ""} - ${_startTime != null ? DateFormat('yyyy-MM-dd HH:mm:ss').format(_startTime!.add(Duration(seconds: (_totalPages * _recordsPerPage - 1) * _sampleRate))) : ""}',
+              ),
+            ],
+          ),
         ),
         if (_fileInfo.contains('Warning: No valid data')) ...[
           const SizedBox(height: 10),
           ElevatedButton.icon(
             onPressed: _fixFileData,
-            icon: const Icon(Icons.build),
+            icon: const Icon(Icons.build, color: Colors.white),
             label: const Text('Fix File'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green,
+              foregroundColor: Colors.white,
+            ),
           ),
         ],
       ],
@@ -680,58 +774,46 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
         Expanded(
           child: Stack(
             children: [
-              Column(
-                children: [
-                  Container(
-                    decoration: const BoxDecoration(
-                      border: Border(
-                        bottom: BorderSide(color: Colors.grey),
-                      ),
+              SingleChildScrollView(
+                controller: horizontalController,
+                scrollDirection: Axis.horizontal,
+                child: Column(
+                  children: [
+                    DataTable(
+                      headingRowHeight: 56,
+                      dataRowHeight: 0,
+                      columnSpacing: columnSpacing,
+                      columns: columns,
+                      rows: const [],
                     ),
-                    child: SingleChildScrollView(
-                      controller: horizontalController,
-                      scrollDirection: Axis.horizontal,
-                      child: DataTable(
-                        headingRowHeight: 56,
-                        dataRowHeight: 0,
-                        columnSpacing: columnSpacing,
-                        columns: columns,
-                        rows: const [],
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    child: SingleChildScrollView(
-                      controller: horizontalController,
-                      scrollDirection: Axis.horizontal,
+                    Expanded(
                       child: SingleChildScrollView(
-                        child: _recordData.isEmpty
-                            ? const Center(child: Text('No records to display'))
-                            : DataTable(
-                                headingRowHeight: 0,
-                                dataRowHeight: 48,
-                                columnSpacing: columnSpacing,
-                                columns: columns
-                                    .map((col) => const DataColumn(
-                                        label: SizedBox.shrink()))
-                                    .toList(),
-                                rows: _recordData.map((record) {
-                                  return DataRow(
-                                    cells: record.entries.map((entry) {
-                                      return DataCell(
-                                        Text(
-                                          entry.value.toString(),
-                                          style: const TextStyle(fontSize: 14),
-                                        ),
-                                      );
-                                    }).toList(),
-                                  );
-                                }).toList(),
-                              ),
+                        scrollDirection: Axis.vertical,
+                        child: DataTable(
+                          headingRowHeight: 0,
+                          dataRowHeight: 48,
+                          columnSpacing: columnSpacing,
+                          columns: columns
+                              .map((col) =>
+                                  const DataColumn(label: SizedBox.shrink()))
+                              .toList(),
+                          rows: _recordData.map((record) {
+                            return DataRow(
+                              cells: record.entries.map((entry) {
+                                return DataCell(
+                                  Text(
+                                    entry.value.toString(),
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
+                                );
+                              }).toList(),
+                            );
+                          }).toList(),
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
               if (_isLoadingRecords)
                 const Center(

@@ -251,6 +251,13 @@ class CsdFileHandler {
     var rawStartTime = data.getInt64(3032, Endian.big);
     var rawStopTime = data.getInt64(3040, Endian.big);
 
+    print('rawNumDevices: $rawNumDevices');
+    print('rawNumChannels: $rawNumChannels');
+    print('rawNumSamples: $rawNumSamples');
+    print('rawSampleRate: $rawSampleRate');
+    print('rawStartTime: $rawStartTime');
+    print('rawStopTime: $rawStopTime');
+
     // Validate timestamps
     if (rawStartTime > 8640000000000000 || rawStartTime < -8640000000000000) {
       rawStartTime = 0;
