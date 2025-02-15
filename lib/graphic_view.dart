@@ -498,6 +498,10 @@ class _GraphicViewState extends State<GraphicView> {
               reservedSize: 50,
               interval: Math.max(0.1, (maxY - minY) / 5),
               getTitlesWidget: (value, meta) {
+                // Skip the bottom value to prevent overlap with x-axis
+                if (value == minY) {
+                  return const SizedBox.shrink();
+                }
                 return Text(
                   _formatValue(value),
                   textAlign: TextAlign.right,
