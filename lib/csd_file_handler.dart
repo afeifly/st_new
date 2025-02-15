@@ -777,4 +777,83 @@ class CsdFileHandler {
 
     return List.generate(numChannels, (i) => (mins[i], maxs[i]));
   }
+
+  Future<void> updateChannelRange(
+      int channelIndex, double min, double max) async {
+    if (_file == null ||
+        channelIndex < 0 ||
+        _protocolHeader == null ||
+        channelIndex >= _protocolHeader!.numOfChannels) {
+      throw ArgumentError('Invalid channel index or file not loaded');
+    }
+
+    // Get file size before writing
+    final fileSizeBefore = await File(_filePath).length();
+    print('File size before write: $fileSizeBefore bytes');
+
+    // Calculate positions for min and max values
+    final minPosition = 852 +
+        CsdConstants.FILE_HEADER_LENGTH +
+        CsdConstants.PROTOCOL_HEADER_LENGTH +
+        (channelIndex * CsdConstants.CHANNEL_HEADER_LENGTH);
+    final maxPosition = minPosition + 8; // max value follows min value
+
+    print('Channel $channelIndex:');
+    print(
+        '  Writing min=$min at position 0x${minPosition.toRadixString(16)} ($minPosition)');
+    print(
+        '  Writing max=$max at position 0x${maxPosition.toRadixString(16)} ($maxPosition)');
+
+    final raf = await File(_filePath).open(mode: FileMode.writeOnlyAppend);
+    try {
+      // Write min value
+      var minBuffer = ByteData(8);
+      minBuffer.setFloat64(0, min, Endian.big);
+      await raf.setPosition(minPosition);
+      await raf.writeFrom(minBuffer.buffer.asUint8List());
+      print(
+          '  Wrote min bytes: ${minBuffer.buffer.asUint8List().map((b) => '0x${b.toRadixString(16).padLeft(2, '0')}').join(' ')}');
+
+      // Write max value
+      var maxBuffer = ByteData(8);
+      maxBuffer.setFloat64(0, max, Endian.big);
+      await raf.setPosition(maxPosition);
+      await raf.writeFrom(maxBuffer.buffer.asUint8List());
+      print(
+          '  Wrote max bytes: ${maxBuffer.buffer.asUint8List().map((b) => '0x${b.toRadixString(16).padLeft(2, '0')}').join(' ')}');
+
+      // Update the in-memory channel header if it exists
+      if (_channelHeaders != null && _channelHeaders!.length > channelIndex) {
+        var header = _channelHeaders![channelIndex];
+        _channelHeaders![channelIndex] = CsdChannelHeader(
+          pref: header.pref,
+          channelDescription: header.channelDescription,
+          subDeviceDescription: header.subDeviceDescription,
+          deviceDescription: header.deviceDescription,
+          sensorDescription: header.sensorDescription,
+          channelNumber: header.channelNumber,
+          unit: header.unit,
+          unitText: header.unitText,
+          resolution: header.resolution,
+          min: min, // Update min
+          max: max, // Update max
+          deviceId: header.deviceId,
+          subDeviceId: header.subDeviceId,
+          sensorId: header.sensorId,
+          channelId: header.channelId,
+          channelConfig: header.channelConfig,
+          slaveAddress: header.slaveAddress,
+          deviceType: header.deviceType,
+          deviceUniqueId: header.deviceUniqueId,
+        );
+      }
+    } finally {
+      await raf.close();
+
+      // Get file size after writing
+      final fileSizeAfter = await File(_filePath).length();
+      print('File size after write: $fileSizeAfter bytes');
+      print('File size difference: ${fileSizeAfter - fileSizeBefore} bytes');
+    }
+  }
 }

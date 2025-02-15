@@ -268,6 +268,12 @@ $stackTrace''';
       // Calculate actual min/max values for each channel
       final channelRanges = await csdFile.calculateChannelRanges();
 
+      // Update each channel's min/max values in the file
+      for (int i = 0; i < _numChannels; i++) {
+        final (min, max) = channelRanges[i];
+        await csdFile.updateChannelRange(i, min, max);
+      }
+
       // Format and display the ranges
       String rangeInfo = '\n\nChannel value ranges:';
       for (int i = 0; i < _numChannels; i++) {
