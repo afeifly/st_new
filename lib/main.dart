@@ -17,7 +17,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'CSD Handler',
+      title: 'CSD Utility',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
@@ -49,6 +49,7 @@ class _MyHomePageState extends State<MyHomePage> {
   int _sampleRate = 1;
   List<double> _channelMins = [];
   List<double> _channelMaxs = [];
+  String? _lastDirectory;
 
   // Add this method to format values based on resolution
   String _formatValue(dynamic value, int resolution) {
@@ -75,6 +76,7 @@ class _MyHomePageState extends State<MyHomePage> {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['csd'],
+        initialDirectory: _lastDirectory,
       );
 
       if (result == null) {
@@ -375,16 +377,26 @@ Stop time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStopTime)}''';
     }
   }
 
+  // Add method to load last directory on init
+  @override
+  void initState() {
+    super.initState();
+    _loadLastDirectory();
+  }
+
+  Future<void> _loadLastDirectory() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _lastDirectory = prefs.getString('lastDirectory');
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool hasError = _fileInfo.contains('Error') ||
         _fileInfo.contains('Warning: No valid data');
 
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: const Text('CSD File Reader'),
-      ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
@@ -392,40 +404,18 @@ Stop time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStopTime)}''';
           children: [
             Row(
               children: [
-                PopupMenuButton<String>(
-                  onSelected: (String value) {
-                    if (value == 'open') {
-                      _openAndReadCsdFile();
-                    } else if (value == 'close') {
-                      _closeFile();
-                    }
-                  },
-                  itemBuilder: (BuildContext context) =>
-                      <PopupMenuEntry<String>>[
-                    const PopupMenuItem<String>(
-                      value: 'open',
-                      child: ListTile(
-                        leading: Icon(Icons.folder_open),
-                        title: Text('Open CSD File'),
-                      ),
-                    ),
-                    if (_lastLoadedFilePath != null && !hasError)
-                      const PopupMenuItem<String>(
-                        value: 'close',
-                        child: ListTile(
-                          leading: Icon(Icons.close),
-                          title: Text('Close File'),
-                        ),
-                      ),
-                  ],
-                  child: ElevatedButton.icon(
-                    onPressed: null,
-                    icon: const Icon(Icons.folder_open),
-                    label: const Text('Open File'),
-                  ),
+                ElevatedButton.icon(
+                  onPressed: _lastLoadedFilePath == null
+                      ? _openAndReadCsdFile
+                      : _closeFile,
+                  icon: Icon(_lastLoadedFilePath == null
+                      ? Icons.folder_open
+                      : Icons.close),
+                  label: Text(
+                      _lastLoadedFilePath == null ? 'Open File' : 'Close File'),
                 ),
-                const SizedBox(width: 16),
                 if (_lastLoadedFilePath != null && !hasError) ...[
+                  const SizedBox(width: 16),
                   ElevatedButton.icon(
                     onPressed: () {
                       setState(() {
@@ -436,6 +426,51 @@ Stop time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStopTime)}''';
                         Icon(_showChart ? Icons.arrow_back : Icons.show_chart),
                     label: Text(_showChart ? 'Back to Info' : 'Show Chart'),
                   ),
+                  if (_showChart) ...[
+                    const SizedBox(width: 16),
+                    SizedBox(
+                      height: 36, // Match other button heights
+                      child: ElevatedButton(
+                        onPressed: null,
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          backgroundColor:
+                              Theme.of(context).colorScheme.surface,
+                        ),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<int>(
+                            value: _selectedChannel,
+                            isDense: true, // Make the dropdown more compact
+                            items: List.generate(
+                              _numChannels,
+                              (index) => DropdownMenuItem(
+                                value: index,
+                                child: Text(
+                                  _channelDescriptions[index],
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    color: Colors.black87,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            onChanged: (value) {
+                              if (value != null) {
+                                setState(() {
+                                  _selectedChannel = value;
+                                });
+                                if (_showChart) {
+                                  setState(() {});
+                                }
+                              }
+                            },
+                            icon: const Icon(Icons.arrow_drop_down, size: 20),
+                            elevation: 3,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ],
             ),
@@ -452,6 +487,12 @@ Stop time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStopTime)}''';
                       sampleRate: _sampleRate,
                       channelMins: _channelMins,
                       channelMaxs: _channelMaxs,
+                      selectedChannel: _selectedChannel,
+                      onChannelChanged: (value) {
+                        setState(() {
+                          _selectedChannel = value;
+                        });
+                      },
                     )
                   : Column(
                       crossAxisAlignment: CrossAxisAlignment.start,

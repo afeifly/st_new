@@ -3,6 +3,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'csd_file_handler.dart';
 import 'package:intl/intl.dart'; // Add this import for date formatting
 import 'dart:math' as Math;
+import 'dart:math';
 
 // Add these enums at the top of the file
 enum TimeRange {
@@ -22,6 +23,8 @@ class GraphicView extends StatefulWidget {
   final int sampleRate;
   final List<double> channelMins;
   final List<double> channelMaxs;
+  final int selectedChannel;
+  final ValueChanged<int> onChannelChanged;
 
   const GraphicView({
     super.key,
@@ -34,6 +37,8 @@ class GraphicView extends StatefulWidget {
     required this.sampleRate,
     required this.channelMins,
     required this.channelMaxs,
+    required this.selectedChannel,
+    required this.onChannelChanged,
   });
 
   @override
@@ -41,7 +46,6 @@ class GraphicView extends StatefulWidget {
 }
 
 class _GraphicViewState extends State<GraphicView> {
-  int _selectedChannel = 0;
   List<FlSpot> _chartData = [const FlSpot(0, 0)];
   final DateFormat _fullFormatter = DateFormat('yyyy-MM-dd HH:mm:ss');
   final DateFormat _timeFormatter = DateFormat('HH:mm:ss');
@@ -57,13 +61,22 @@ class _GraphicViewState extends State<GraphicView> {
   @override
   void initState() {
     super.initState();
-    _currentTimeRange = TimeRange.total; // Start with total view
-    _rangeStartTime = widget.startTime; // Initialize range start time
+    _currentTimeRange = TimeRange.total;
+    _rangeStartTime = widget.startTime;
     _initializeChart();
   }
 
+  @override
+  void didUpdateWidget(GraphicView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // If the selected channel changed, update the chart
+    if (oldWidget.selectedChannel != widget.selectedChannel) {
+      _prepareChartData(widget.selectedChannel);
+    }
+  }
+
   Future<void> _initializeChart() async {
-    await _prepareChartData(_selectedChannel);
+    await _prepareChartData(widget.selectedChannel);
   }
 
   // Add this method to calculate the time-aligned range
@@ -297,25 +310,9 @@ class _GraphicViewState extends State<GraphicView> {
   }
 
   String _formatValue(double value) {
-    int resolution = widget.resolutions[_selectedChannel];
+    int resolution = widget.resolutions[widget.selectedChannel];
     if (resolution <= 0) return value.toInt().toString();
     return value.toStringAsFixed(resolution);
-  }
-
-  void _onChannelChanged(int? value) {
-    if (value == null) return;
-
-    // Print channel info before changing
-    print('\nChanging to channel: $value');
-    print('Channel description: ${widget.channelDescriptions[value]}');
-    print('Channel min: ${widget.channelMins[value]}');
-    print('Channel max: ${widget.channelMaxs[value]}');
-    print('Channel unit: ${widget.unitTexts[value]}\n');
-
-    setState(() {
-      _selectedChannel = value;
-    });
-    _prepareChartData(_selectedChannel);
   }
 
   Future<void> _showTimeRangeDialog() async {
@@ -359,7 +356,7 @@ class _GraphicViewState extends State<GraphicView> {
         _currentTimeRange = result;
         _rangeStartTime = rangeStart;
       });
-      await _prepareChartData(_selectedChannel);
+      await _prepareChartData(widget.selectedChannel);
     }
   }
 
@@ -450,7 +447,7 @@ class _GraphicViewState extends State<GraphicView> {
       setState(() {
         _rangeStartTime = newStartTime;
       });
-      await _prepareChartData(_selectedChannel);
+      await _prepareChartData(widget.selectedChannel);
     }
   }
 
@@ -458,19 +455,41 @@ class _GraphicViewState extends State<GraphicView> {
     final min = widget.channelMins[channelIndex];
     final max = widget.channelMaxs[channelIndex];
 
-    // Calculate y-axis range
+    // Calculate y-axis range with reasonable bounds
     double minY, maxY;
     if (min == max || (min == 0 && max == 0)) {
       // If min equals max or both are zero, create a range around the value
       final baseValue = min == 0 ? 0 : min;
-      minY = baseValue - 50; // Extend 50 units below
-      maxY = baseValue + 50; // Extend 50 units above
+      minY = baseValue - 50;
+      maxY = baseValue + 50;
     } else {
-      // Add 10% padding to min/max for better visualization
+      // Calculate nice number ranges
       final range = max - min;
-      final padding = range * 0.1;
-      minY = min - padding;
-      maxY = max + padding;
+      final absMin = min.abs();
+      final absMax = max.abs();
+      final maxAbs = Math.max(absMin, absMax);
+
+      // Determine the appropriate scale
+      double scale;
+      if (maxAbs >= 100) {
+        scale = 10.0;
+      } else if (maxAbs >= 10) {
+        scale = 5.0;
+      } else if (maxAbs >= 1) {
+        scale = 1.0;
+      } else {
+        scale = 0.1;
+      }
+
+      // Round to nice numbers
+      minY = (min / scale).floor() * scale;
+      maxY = (max / scale).ceil() * scale;
+
+      // Add padding if range is too small
+      if ((maxY - minY) < scale) {
+        minY -= scale;
+        maxY += scale;
+      }
     }
 
     return LineChart(
@@ -535,11 +554,6 @@ class _GraphicViewState extends State<GraphicView> {
         ],
         lineTouchData: LineTouchData(
           enabled: true,
-          touchCallback: (FlTouchEvent event, LineTouchResponse? response) {
-            if (event is FlTapUpEvent) {
-              _showTimeRangeDialog();
-            }
-          },
           touchTooltipData: LineTouchTooltipData(
             fitInsideHorizontally: true,
             fitInsideVertically: true,
@@ -607,48 +621,6 @@ class _GraphicViewState extends State<GraphicView> {
 
     return Column(
       children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.grey[100],
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.grey[300]!),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Select Channel: ',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              const SizedBox(width: 10),
-              DropdownButton<int>(
-                value: _selectedChannel,
-                items: List.generate(
-                  widget.numChannels,
-                  (index) => DropdownMenuItem(
-                    value: index,
-                    child: Text(
-                      widget.channelDescriptions[index],
-                      style: const TextStyle(
-                        fontSize: 14,
-                        color: Colors.black87,
-                      ),
-                    ),
-                  ),
-                ),
-                onChanged: _onChannelChanged,
-                underline: Container(),
-                borderRadius: BorderRadius.circular(8),
-                dropdownColor: Colors.grey[50],
-                elevation: 3,
-              ),
-            ],
-          ),
-        ),
         const SizedBox(height: 20),
         Expanded(
           child: Container(
@@ -701,21 +673,6 @@ class _GraphicViewState extends State<GraphicView> {
                         const Center(
                           child: CircularProgressIndicator(),
                         ),
-                      if (!_isLoading && _chartData.length > 1)
-                        Positioned.fill(
-                          bottom: 40, // Height of x-axis labels
-                          child: MouseRegion(
-                            cursor: SystemMouseCursors.click,
-                            child: GestureDetector(
-                              onTap: _showTimeRangeDialog,
-                              child: Container(
-                                color: Colors.transparent,
-                                height: 40,
-                                margin: const EdgeInsets.only(top: 8),
-                              ),
-                            ),
-                          ),
-                        ),
                       SizedBox(
                         width: double.infinity,
                         height: double.infinity,
@@ -723,7 +680,7 @@ class _GraphicViewState extends State<GraphicView> {
                             ? const Center(
                                 child: Text('No data available'),
                               )
-                            : _buildChart(_chartData, _selectedChannel),
+                            : _buildChart(_chartData, widget.selectedChannel),
                       ),
                     ],
                   ),
