@@ -129,12 +129,9 @@ class _MyHomePageState extends State<MyHomePage> {
             firstTenRecords.any((channelData) => channelData.isEmpty)) {
           setState(() {
             _fileInfo = '''
-File Information:
-Number of channels: $_numChannels
+Number of channels: $_numChannels          Sample rate: ${protocolHeader.sampleRate}
 Number of records: ${protocolHeader.numOfSamples}
-Sample rate: ${protocolHeader.sampleRate} 
-Start time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(_startTime!)}
-Stop time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(stopTime)}
+Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(_startTime!)} - ${DateFormat('yyyy-MM-dd HH:mm:ss').format(stopTime)}
 
 Warning: No valid data available in the file.''';
           });
@@ -164,12 +161,9 @@ Warning: No valid data available in the file.''';
 
         setState(() {
           _fileInfo = '''
-File Information:
-Number of channels: $_numChannels
+Number of channels: $_numChannels          Sample rate: ${protocolHeader.sampleRate}
 Number of records: ${protocolHeader.numOfSamples}
-Sample rate: ${protocolHeader.sampleRate} 
-Start time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(_startTime!)}
-Stop time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(stopTime)}''';
+Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(_startTime!)} - ${DateFormat('yyyy-MM-dd HH:mm:ss').format(stopTime)}''';
         });
       } catch (e) {
         print('Error in CsdFileHandler.load(): $e');
@@ -342,12 +336,9 @@ $stackTrace''';
         _channelMaxs = newChannelMaxs;
 
         _fileInfo = '''
-File Information:
-Number of channels: $_numChannels
+Number of channels: $_numChannels          Sample rate: ${protocolHeader.sampleRate}
 Number of records: ${protocolHeader.numOfSamples}
-Sample rate: ${protocolHeader.sampleRate} 
-Start time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)}
-Stop time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStopTime)}''';
+Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStopTime)}''';
 
         if (firstTenRecords.isNotEmpty) {
           _recordData = List.generate(10, (recordIndex) {
