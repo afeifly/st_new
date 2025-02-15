@@ -153,8 +153,8 @@ class CsdChannelHeader {
 
 /// Main class to handle CSD files
 class CsdFileHandler {
-  late final String _filePath;
-  late final RandomAccessFile _file;
+  String _filePath = '';
+  RandomAccessFile? _file;
   CsdFileInfo? _fileInfo;
   CsdProtocolHeader? _protocolHeader;
   List<CsdChannelHeader>? _channelHeaders;
@@ -164,10 +164,15 @@ class CsdFileHandler {
 
   /// Opens a CSD file for reading
   Future<void> load(String filePath) async {
-    _filePath = filePath;
-    _file = await File(filePath).open();
-
     try {
+      // Close existing file if open
+      if (_file != null) {
+        await _file!.close();
+      }
+
+      _filePath = filePath;
+      _file = await File(filePath).open();
+
       await _readFileInfo();
       try {
         await _readProtocolHeader();
@@ -218,8 +223,8 @@ class CsdFileHandler {
 
   /// Reads the file information header
   Future<void> _readFileInfo() async {
-    await _file.setPosition(0);
-    var buffer = await _file.read(CsdConstants.FILE_HEADER_LENGTH);
+    await _file!.setPosition(0);
+    var buffer = await _file!.read(CsdConstants.FILE_HEADER_LENGTH);
     var data = ByteData.sublistView(buffer);
 
     _fileInfo = CsdFileInfo(
@@ -235,8 +240,8 @@ class CsdFileHandler {
   Future<void> _readProtocolHeader() async {
     if (_fileInfo == null) throw StateError('File info not loaded');
 
-    await _file.setPosition(CsdConstants.PROTOCOL_HEADER_START);
-    var buffer = await _file.read(CsdConstants.PROTOCOL_HEADER_LENGTH);
+    await _file!.setPosition(CsdConstants.PROTOCOL_HEADER_START);
+    var buffer = await _file!.read(CsdConstants.PROTOCOL_HEADER_LENGTH);
     var data = ByteData.sublistView(buffer);
 
     final rawNumDevices = data.getInt32(3012, Endian.big);
@@ -301,12 +306,12 @@ class CsdFileHandler {
     }
 
     try {
-      await _file.setPosition(CsdConstants.CHANNEL_HEADERS_START);
+      await _file!.setPosition(CsdConstants.CHANNEL_HEADERS_START);
       _channelHeaders = [];
 
       for (int i = 0; i < numChannels; i++) {
         try {
-          var rawBuffer = await _file.read(CsdConstants.CHANNEL_HEADER_LENGTH);
+          var rawBuffer = await _file!.read(CsdConstants.CHANNEL_HEADER_LENGTH);
           if (rawBuffer.length < CsdConstants.CHANNEL_HEADER_LENGTH) {
             break;
           }
@@ -466,9 +471,9 @@ class CsdFileHandler {
       if (sampleIndex > end) break;
 
       final position = dataStartPosition + (sampleIndex * recordLength);
-      await _file.setPosition(position);
+      await _file!.setPosition(position);
 
-      var buffer = await _file.read(recordLength);
+      var buffer = await _file!.read(recordLength);
       if (buffer.length < recordLength) {
         break;
       }
@@ -500,7 +505,7 @@ class CsdFileHandler {
 
   /// Closes the file
   Future<void> close() async {
-    await _file.close();
+    await _file!.close();
   }
 
   List<String> getChannelDescriptions() {
@@ -607,13 +612,27 @@ class CsdFileHandler {
       throw Exception('Protocol header not loaded');
     }
 
-    // First read the current file to get all values
+    // Calculate the actual number of samples based on file size
+    final file = File(filePath);
+    final fileLength = await file.length();
+    final numChannels = _protocolHeader!.numOfChannels;
+    final recordLength = CsdConstants.RECORD_ID_LENGTH +
+        (CsdConstants.CHANNEL_VALUE_LENGTH * numChannels);
+    final dataStart = CsdConstants.CHANNEL_HEADERS_START +
+        (CsdConstants.CHANNEL_HEADER_LENGTH * numChannels);
+
+    // Calculate actual samples from file size
+    final dataLength = fileLength - dataStart;
+    final calculatedSamples = (dataLength / recordLength).floor();
+
+    // Use the smaller of calculated or provided samples to be safe
+    final finalSampleCount = Math.min(calculatedSamples, actualSamples);
+
+    // Read the current sample rate
     var readFile = await File(filePath).open(mode: FileMode.read);
     late final int currentSampleRate;
-    late final int fileLength;
 
     try {
-      fileLength = await readFile.length();
       await readFile.setPosition(CsdConstants.FILE_HEADER_LENGTH + 3024);
       var sampleRateBuffer = await readFile.read(4);
       var sampleRateData =
@@ -628,29 +647,17 @@ class CsdFileHandler {
     final effectiveStartTime =
         startTime <= 0 ? DateTime.now().millisecondsSinceEpoch : startTime;
 
-    final durationInSeconds = (actualSamples / sampleRate).ceil();
+    final durationInSeconds = (finalSampleCount / sampleRate).ceil();
     final stopTime = effectiveStartTime + (durationInSeconds * 1000);
 
-    // Create a temporary copy of the file
-    var tempFile = File('${filePath}.tmp');
-    await File(filePath).copy('${filePath}.tmp');
-
-    // Open original file for writing and temp file for reading
-    var writeFile = await File(filePath).open(mode: FileMode.write);
-    var tempRead = await tempFile.open(mode: FileMode.read);
+    // Open file for writing
+    var writeFile = await File(filePath).open(mode: FileMode.writeOnlyAppend);
 
     try {
-      // Copy the file header and protocol header
-      await tempRead.setPosition(0);
-      var headerBuffer =
-          await tempRead.read(CsdConstants.CHANNEL_HEADERS_START);
-      await writeFile.setPosition(0);
-      await writeFile.writeFrom(headerBuffer);
-
       // Write number of samples
       final samplesOffset = CsdConstants.FILE_HEADER_LENGTH + 3020;
       await writeFile.setPosition(samplesOffset);
-      var samplesBytes = ByteData(4)..setInt32(0, actualSamples, Endian.big);
+      var samplesBytes = ByteData(4)..setInt32(0, finalSampleCount, Endian.big);
       await writeFile.writeFrom(samplesBytes.buffer.asUint8List());
 
       // Write stop time
@@ -659,24 +666,115 @@ class CsdFileHandler {
       var stopTimeBytes = ByteData(8)..setInt64(0, stopTime, Endian.big);
       await writeFile.writeFrom(stopTimeBytes.buffer.asUint8List());
 
-      // Copy the rest of the file
-      await tempRead.setPosition(CsdConstants.CHANNEL_HEADERS_START);
-      var remainingLength = fileLength - CsdConstants.CHANNEL_HEADERS_START;
-      await writeFile.setPosition(CsdConstants.CHANNEL_HEADERS_START);
+      // Update the in-memory protocol header
+      _protocolHeader = CsdProtocolHeader(
+        pref: _protocolHeader!.pref,
+        deviceId: _protocolHeader!.deviceId,
+        description: _protocolHeader!.description,
+        testerName: _protocolHeader!.testerName,
+        companyName: _protocolHeader!.companyName,
+        companyAddress: _protocolHeader!.companyAddress,
+        serviceCompanyName: _protocolHeader!.serviceCompanyName,
+        serviceCompanyAddress: _protocolHeader!.serviceCompanyAddress,
+        deviceName: _protocolHeader!.deviceName,
+        calibrationDate: _protocolHeader!.calibrationDate,
+        numOfDevices: _protocolHeader!.numOfDevices,
+        numOfChannels: _protocolHeader!.numOfChannels,
+        numOfSamples: finalSampleCount,
+        sampleRate: sampleRate,
+        sampleRateFactor: _protocolHeader!.sampleRateFactor,
+        timeOfFirstSample: effectiveStartTime,
+        stopTime: stopTime,
+        status: _protocolHeader!.status,
+        firmwareVersion: _protocolHeader!.firmwareVersion,
+        firstSamplePointer: _protocolHeader!.firstSamplePointer,
+        crc: _protocolHeader!.crc,
+        deviceType: _protocolHeader!.deviceType,
+        origin: _protocolHeader!.origin,
+      );
 
-      // Copy in chunks to handle large files
-      const chunkSize = 1024 * 1024; // 1MB chunks
-      var remaining = remainingLength;
-      while (remaining > 0) {
-        var toRead = remaining > chunkSize ? chunkSize : remaining;
-        var chunk = await tempRead.read(toRead);
-        await writeFile.writeFrom(chunk);
-        remaining -= chunk.length;
-      }
+      print('Updated sample count to: $finalSampleCount');
+
+      // Reload the file to ensure all changes are synchronized
+      await load(filePath);
     } finally {
       await writeFile.close();
-      await tempRead.close();
-      await tempFile.delete();
     }
+  }
+
+  /// Calculates min/max values for each channel by scanning all data
+  Future<List<(double, double)>> calculateChannelRanges() async {
+    if (_protocolHeader == null) {
+      print('No protocol header found');
+      return [];
+    }
+
+    final numChannels = _protocolHeader!.numOfChannels;
+    final totalSamples = _protocolHeader!.numOfSamples;
+
+    print(
+        'Starting range calculation for $numChannels channels, $totalSamples samples');
+
+    if (totalSamples <= 0 || numChannels <= 0) {
+      print('Invalid samples or channels count: $totalSamples, $numChannels');
+      return List.generate(numChannels, (_) => (0.0, 0.0));
+    }
+
+    // Initialize min/max arrays
+    List<double> mins = List.filled(numChannels, double.infinity);
+    List<double> maxs = List.filled(numChannels, double.negativeInfinity);
+
+    // Process data in chunks to avoid memory issues
+    const chunkSize = 1000;
+    final totalChunks = (totalSamples / chunkSize).ceil();
+
+    print('Processing data in $totalChunks chunks of $chunkSize samples each');
+
+    for (int startIndex = 0;
+        startIndex < totalSamples;
+        startIndex += chunkSize) {
+      final endIndex = (startIndex + chunkSize - 1).clamp(0, totalSamples - 1);
+      print(
+          'Processing chunk ${(startIndex ~/ chunkSize) + 1}/$totalChunks (samples $startIndex-$endIndex)');
+
+      final data = await getDataWithSampling(startIndex, endIndex);
+
+      // Process each channel
+      for (int channel = 0; channel < numChannels; channel++) {
+        int validValues = 0;
+        int skippedValues = 0;
+
+        for (final value in data[channel]) {
+          // Skip special values
+          if (value == -9999.0 || value == -8888.0) {
+            skippedValues++;
+            continue;
+          }
+
+          mins[channel] = Math.min(mins[channel], value);
+          maxs[channel] = Math.max(maxs[channel], value);
+          validValues++;
+        }
+
+        print(
+            'Channel $channel: processed ${validValues + skippedValues} values '
+            '(valid: $validValues, skipped: $skippedValues)');
+      }
+    }
+
+    // Convert infinities to 0 for channels with no valid data
+    for (int i = 0; i < numChannels; i++) {
+      if (mins[i] == double.infinity) {
+        print('Channel $i: No valid minimum found, using 0.0');
+        mins[i] = 0.0;
+      }
+      if (maxs[i] == double.negativeInfinity) {
+        print('Channel $i: No valid maximum found, using 0.0');
+        maxs[i] = 0.0;
+      }
+      print('Channel $i final range: ${mins[i]} to ${maxs[i]}');
+    }
+
+    return List.generate(numChannels, (i) => (mins[i], maxs[i]));
   }
 }

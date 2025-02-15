@@ -263,8 +263,27 @@ $stackTrace''';
 
       var csdFile = CsdFileHandler();
       await csdFile.load(_lastLoadedFilePath!);
+
       await csdFile.fixSampleCount(_lastLoadedFilePath!, actualSamples);
+      // Calculate actual min/max values for each channel
+      final channelRanges = await csdFile.calculateChannelRanges();
+
+      // Format and display the ranges
+      String rangeInfo = '\n\nChannel value ranges:';
+      for (int i = 0; i < _numChannels; i++) {
+        final (min, max) = channelRanges[i];
+        final resolution = _resolutions[i];
+        final formattedMin = _formatValue(min, resolution);
+        final formattedMax = _formatValue(max, resolution);
+        rangeInfo +=
+            '\n${_channelDescriptions[i]}: $formattedMin to $formattedMax ${_unitTexts[i]}';
+      }
+
       await csdFile.close();
+
+      setState(() {
+        _fileInfo += rangeInfo;
+      });
 
       await _reloadCurrentFile();
     } catch (e) {
