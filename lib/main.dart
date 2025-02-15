@@ -690,17 +690,34 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
 
   Widget _buildRecordsTable() {
     final ScrollController horizontalController = ScrollController();
-    final double columnSpacing = 56.0;
+    final double columnSpacing = 24.0; // Reduced from 56.0
+
+    // Define fixed column widths
+    final double timestampWidth = 160.0; // For datetime
+    final double channelWidth = 120.0; // For channel values
+
     final List<DataColumn> columns = [
-      const DataColumn(label: Text('Timestamp')),
+      DataColumn(
+        label: Container(
+          width: timestampWidth,
+          child: const Text(
+            'Timestamp',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      ),
       ...List.generate(
         _numChannels,
         (index) => DataColumn(
-          label: Tooltip(
-            message: _formatMinMaxRange(index),
-            child: Text(
-              '${_channelDescriptions[index]}\n(${_unitTexts[index]})',
-              textAlign: TextAlign.center,
+          label: Container(
+            width: channelWidth,
+            child: Tooltip(
+              message: _formatMinMaxRange(index),
+              child: Text(
+                '${_channelDescriptions[index]}\n(${_unitTexts[index]})',
+                textAlign: TextAlign.center,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ),
         ),
@@ -783,6 +800,7 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
                       headingRowHeight: 56,
                       dataRowHeight: 0,
                       columnSpacing: columnSpacing,
+                      horizontalMargin: 12, // Reduced margin
                       columns: columns,
                       rows: const [],
                     ),
@@ -793,17 +811,31 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
                           headingRowHeight: 0,
                           dataRowHeight: 48,
                           columnSpacing: columnSpacing,
-                          columns: columns
-                              .map((col) =>
-                                  const DataColumn(label: SizedBox.shrink()))
-                              .toList(),
+                          horizontalMargin: 12, // Same margin as header
+                          columns: List.generate(
+                            columns.length,
+                            (index) => DataColumn(
+                              label: Container(
+                                width:
+                                    index == 0 ? timestampWidth : channelWidth,
+                                child: const SizedBox.shrink(),
+                              ),
+                            ),
+                          ),
                           rows: _recordData.map((record) {
                             return DataRow(
                               cells: record.entries.map((entry) {
                                 return DataCell(
-                                  Text(
-                                    entry.value.toString(),
-                                    style: const TextStyle(fontSize: 14),
+                                  Container(
+                                    width: entry.key == 'Record'
+                                        ? timestampWidth
+                                        : channelWidth,
+                                    alignment: Alignment.center,
+                                    child: Text(
+                                      entry.value.toString(),
+                                      style: const TextStyle(fontSize: 14),
+                                      textAlign: TextAlign.center,
+                                    ),
                                   ),
                                 );
                               }).toList(),
