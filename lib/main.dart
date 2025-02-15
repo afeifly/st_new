@@ -6,6 +6,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'graphic_view.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:math' as Math;
 
 void main() {
   runApp(const MyApp());
@@ -50,6 +51,11 @@ class _MyHomePageState extends State<MyHomePage> {
   List<double> _channelMins = [];
   List<double> _channelMaxs = [];
   String? _lastDirectory;
+  int _currentPage = 0;
+  static const int _recordsPerPage = 10;
+  bool _isLoadingRecords = false;
+  int _totalPages = 0;
+  double _sliderPosition = 0.0;
 
   // Add this method to format values based on resolution
   String _formatValue(dynamic value, int resolution) {
@@ -70,6 +76,7 @@ class _MyHomePageState extends State<MyHomePage> {
   Future<void> _openAndReadCsdFile() async {
     setState(() {
       _showChart = false;
+      _sliderPosition = 0.0;
     });
 
     try {
@@ -115,56 +122,28 @@ class _MyHomePageState extends State<MyHomePage> {
         _startTime = csdFile.getStartTime();
         _numChannels = csdFile.getNumOfChannels();
         var stopTime = csdFile.getStopTime();
-        var firstTenRecords = await csdFile.getDataWithSampling(0, 9);
         _resolutions = csdFile.getResolutions();
         _channelDescriptions = csdFile.getChannelDescriptions();
         _unitTexts = csdFile.getUnitTexts();
         _sampleRate = protocolHeader.sampleRate;
-
-        // Get min/max values for each channel
         _channelMins = csdFile.getChannelMins();
         _channelMaxs = csdFile.getChannelMaxs();
 
-        if (firstTenRecords.isEmpty ||
-            firstTenRecords.any((channelData) => channelData.isEmpty)) {
-          setState(() {
-            _fileInfo = '''
-Number of channels: $_numChannels          Sample rate: ${protocolHeader.sampleRate}
-Number of records: ${protocolHeader.numOfSamples}
-Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(_startTime!)} - ${DateFormat('yyyy-MM-dd HH:mm:ss').format(stopTime)}
-
-Warning: No valid data available in the file.''';
-          });
-          return;
-        }
-
-        _recordData = List.generate(10, (recordIndex) {
-          // Calculate timestamp using sampleRate
-          final timestamp =
-              _startTime!.add(Duration(seconds: recordIndex * _sampleRate));
-          return {
-            'Record': DateFormat('yyyy-MM-dd HH:mm:ss').format(timestamp),
-            ...Map.fromEntries(
-              List.generate(
-                _numChannels,
-                (channelIndex) => MapEntry(
-                  'Channel ${channelIndex}',
-                  _formatValue(
-                    firstTenRecords[channelIndex][recordIndex],
-                    _resolutions[channelIndex],
-                  ),
-                ),
-              ),
-            ),
-          };
-        });
+        // Calculate total pages
+        _totalPages =
+            ((protocolHeader.numOfSamples - 1) ~/ _recordsPerPage) + 1;
 
         setState(() {
           _fileInfo = '''
 Number of channels: $_numChannels          Sample rate: ${protocolHeader.sampleRate}
 Number of records: ${protocolHeader.numOfSamples}
 Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(_startTime!)} - ${DateFormat('yyyy-MM-dd HH:mm:ss').format(stopTime)}''';
+          _currentPage = 0;
+          _recordData.clear();
         });
+
+        // Load first page of records
+        await _loadRecordPage(0);
       } catch (e) {
         print('Error in CsdFileHandler.load(): $e');
         setState(() {
@@ -209,6 +188,7 @@ $stackTrace''';
       _sampleRate = 1;
       _channelMins.clear();
       _channelMaxs.clear();
+      _sliderPosition = 0.0;
     });
   }
 
@@ -384,6 +364,80 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
     });
   }
 
+  Future<void> _loadRecordPage(int page) async {
+    if (_isLoadingRecords || _lastLoadedFilePath == null) return;
+
+    setState(() {
+      _isLoadingRecords = true;
+      _sliderPosition = _totalPages > 1 ? page / (_totalPages - 1) : 0.0;
+    });
+
+    try {
+      var csdFile = CsdFileHandler();
+      await csdFile.load(_lastLoadedFilePath!);
+
+      final totalRecords = csdFile.getProtocolHeader().numOfSamples;
+      final startIndex = page * _recordsPerPage;
+      final endIndex =
+          Math.min(startIndex + _recordsPerPage - 1, totalRecords - 1);
+
+      // Check if we have valid indices
+      if (startIndex > endIndex || startIndex >= totalRecords) {
+        throw Exception('Invalid page range');
+      }
+
+      var pageRecords = await csdFile.getDataWithSampling(startIndex, endIndex);
+
+      if (pageRecords.isNotEmpty) {
+        // Calculate actual number of records for this page
+        final recordCount = endIndex - startIndex + 1;
+
+        setState(() {
+          _recordData = List.generate(recordCount, (recordIndex) {
+            final timestamp = _startTime!.add(
+              Duration(seconds: (startIndex + recordIndex) * _sampleRate),
+            );
+            return {
+              'Record': DateFormat('yyyy-MM-dd HH:mm:ss').format(timestamp),
+              ...Map.fromEntries(
+                List.generate(
+                  _numChannels,
+                  (channelIndex) => MapEntry(
+                    'Channel ${channelIndex}',
+                    _formatValue(
+                      pageRecords[channelIndex][recordIndex],
+                      _resolutions[channelIndex],
+                    ),
+                  ),
+                ),
+              ),
+            };
+          });
+          _currentPage = page;
+        });
+      }
+
+      await csdFile.close();
+    } catch (e) {
+      print('Error loading records: $e');
+    } finally {
+      setState(() {
+        _isLoadingRecords = false;
+      });
+    }
+  }
+
+  void _handleSliderChange(double value) {
+    setState(() {
+      _sliderPosition = value;
+    });
+    // Calculate page from slider position
+    final targetPage = (value * (_totalPages - 1)).round();
+    if (targetPage != _currentPage) {
+      _loadRecordPage(targetPage);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool hasError = _fileInfo.contains('Error') ||
@@ -501,51 +555,8 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
                         _buildFileInfo(),
                         if (_recordData.isNotEmpty && !hasError) ...[
                           const SizedBox(height: 20),
-                          const Text(
-                            'First 10 Records:',
-                            style: TextStyle(
-                                fontSize: 18, fontWeight: FontWeight.bold),
-                          ),
-                          const SizedBox(height: 10),
                           Expanded(
-                            child: SingleChildScrollView(
-                              scrollDirection: Axis.horizontal,
-                              child: SingleChildScrollView(
-                                child: DataTable(
-                                  columns: [
-                                    const DataColumn(label: Text('Timestamp')),
-                                    ...List.generate(
-                                      _recordData.first.length - 1,
-                                      (index) => DataColumn(
-                                        label: Tooltip(
-                                          message: _formatMinMaxRange(index),
-                                          child: Text(
-                                            '${_channelDescriptions[index]}\n(${_unitTexts[index]})',
-                                            textAlign: TextAlign.center,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                  rows: _recordData.map((record) {
-                                    return DataRow(
-                                      cells: record.entries.map((entry) {
-                                        return DataCell(
-                                          Text(
-                                            entry.key == 'Record'
-                                                ? entry.value
-                                                : (entry.value is double
-                                                    ? entry.value
-                                                        .toStringAsFixed(6)
-                                                    : entry.value.toString()),
-                                          ),
-                                        );
-                                      }).toList(),
-                                    );
-                                  }).toList(),
-                                ),
-                              ),
-                            ),
+                            child: _buildRecordsTable(),
                           ),
                         ],
                       ],
@@ -579,6 +590,156 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
             label: const Text('Fix File'),
           ),
         ],
+      ],
+    );
+  }
+
+  Widget _buildRecordsTable() {
+    final ScrollController horizontalController = ScrollController();
+    final double columnSpacing = 56.0;
+    final List<DataColumn> columns = [
+      const DataColumn(label: Text('Timestamp')),
+      ...List.generate(
+        _numChannels,
+        (index) => DataColumn(
+          label: Tooltip(
+            message: _formatMinMaxRange(index),
+            child: Text(
+              '${_channelDescriptions[index]}\n(${_unitTexts[index]})',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
+      ),
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Text(
+              'Records:',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(width: 16),
+            IconButton(
+              icon: const Icon(Icons.first_page),
+              onPressed: _currentPage > 0 && !_isLoadingRecords
+                  ? () => _loadRecordPage(0)
+                  : null,
+            ),
+            Expanded(
+              child: SliderTheme(
+                data: SliderThemeData(
+                  thumbShape:
+                      const RoundSliderThumbShape(enabledThumbRadius: 6),
+                  overlayShape:
+                      const RoundSliderOverlayShape(overlayRadius: 12),
+                  trackHeight: 4,
+                  activeTrackColor: Colors.blue,
+                  inactiveTrackColor: Colors.blue.withOpacity(0.3),
+                  thumbColor: Colors.blue,
+                  overlayColor: Colors.blue.withOpacity(0.3),
+                ),
+                child: Slider(
+                  value: _sliderPosition,
+                  onChanged: !_isLoadingRecords ? _handleSliderChange : null,
+                  min: 0.0,
+                  max: 1.0,
+                ),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.last_page),
+              onPressed: _currentPage < _totalPages - 1 && !_isLoadingRecords
+                  ? () => _loadRecordPage(_totalPages - 1)
+                  : null,
+            ),
+            const SizedBox(width: 16),
+            if (_startTime != null)
+              Text(
+                DateFormat('yyyy-MM-dd HH:mm:ss').format(
+                  _startTime!.add(Duration(
+                      seconds: (_sliderPosition *
+                              (_totalPages - 1) *
+                              _recordsPerPage *
+                              _sampleRate)
+                          .round())),
+                ),
+                style: const TextStyle(fontSize: 14),
+              ),
+            const SizedBox(width: 16),
+            Text(
+              'Page ${_currentPage + 1}/$_totalPages',
+              style: const TextStyle(fontSize: 14),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Expanded(
+          child: Stack(
+            children: [
+              Column(
+                children: [
+                  Container(
+                    decoration: const BoxDecoration(
+                      border: Border(
+                        bottom: BorderSide(color: Colors.grey),
+                      ),
+                    ),
+                    child: SingleChildScrollView(
+                      controller: horizontalController,
+                      scrollDirection: Axis.horizontal,
+                      child: DataTable(
+                        headingRowHeight: 56,
+                        dataRowHeight: 0,
+                        columnSpacing: columnSpacing,
+                        columns: columns,
+                        rows: const [],
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      controller: horizontalController,
+                      scrollDirection: Axis.horizontal,
+                      child: SingleChildScrollView(
+                        child: _recordData.isEmpty
+                            ? const Center(child: Text('No records to display'))
+                            : DataTable(
+                                headingRowHeight: 0,
+                                dataRowHeight: 48,
+                                columnSpacing: columnSpacing,
+                                columns: columns
+                                    .map((col) => const DataColumn(
+                                        label: SizedBox.shrink()))
+                                    .toList(),
+                                rows: _recordData.map((record) {
+                                  return DataRow(
+                                    cells: record.entries.map((entry) {
+                                      return DataCell(
+                                        Text(
+                                          entry.value.toString(),
+                                          style: const TextStyle(fontSize: 14),
+                                        ),
+                                      );
+                                    }).toList(),
+                                  );
+                                }).toList(),
+                              ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              if (_isLoadingRecords)
+                const Center(
+                  child: CircularProgressIndicator(),
+                ),
+            ],
+          ),
+        ),
       ],
     );
   }
