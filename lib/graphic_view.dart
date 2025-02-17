@@ -555,10 +555,10 @@ class _GraphicViewState extends State<GraphicView> {
             getTooltipItems: (List<LineBarSpot> touchedSpots) {
               return touchedSpots.map((LineBarSpot touchedSpot) {
                 final value = touchedSpot.y;
-                final timeInSeconds = touchedSpot.x;
-                // Always use full date/time format for tooltip
-                final DateTime time = widget.startTime.add(
-                    Duration(milliseconds: (timeInSeconds * 1000).toInt()));
+                final timeInHours = touchedSpot.x;
+                // Calculate time based on _rangeStartTime instead of widget.startTime
+                final DateTime time = _rangeStartTime!
+                    .add(Duration(seconds: (timeInHours * 3600).round()));
                 final timeStr = _fullFormatter.format(time);
                 return LineTooltipItem(
                   '$timeStr\n'
