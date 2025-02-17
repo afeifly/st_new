@@ -1,9 +1,9 @@
 [Setup]
 AppName=CSD Viewer
-AppVersion=1.0.0  ; Replace with your app's actual version
+AppVersion=1.0.0
 DefaultDirName={pf}\CSD Viewer
 DefaultGroupName=CSD Viewer
-OutputDir=.\output  ; Or wherever you want the installer to be created
+OutputDir=.\output
 OutputBaseFilename=CSDViewerSetup
 Compression=lzma2/ultra64
 SolidCompression=yes
