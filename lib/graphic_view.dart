@@ -324,7 +324,7 @@ class _GraphicViewState extends State<GraphicView> {
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
-                title: const Text('Last Hour'),
+                title: const Text('Hourly View'),
                 leading: const Icon(Icons.access_time),
                 onTap: () => Navigator.pop(context, TimeRange.hour),
               ),
