@@ -147,18 +147,24 @@ class _GraphicViewState extends State<GraphicView> {
       // Calculate range end based on current view
       switch (_currentTimeRange) {
         case TimeRange.hour:
+          rangeStart = DateTime(rangeStart.year, rangeStart.month,
+              rangeStart.day, rangeStart.hour);
           rangeEnd = rangeStart.add(const Duration(hours: 1));
+          break;
         case TimeRange.daily:
+          rangeStart =
+              DateTime(rangeStart.year, rangeStart.month, rangeStart.day);
           rangeEnd = rangeStart.add(const Duration(days: 1));
+          break;
         case TimeRange.monthly:
-          rangeEnd = DateTime(
-            rangeStart.year,
-            rangeStart.month + 1,
-            1,
-          );
+          rangeStart = DateTime(rangeStart.year, rangeStart.month, 1);
+          rangeEnd = DateTime(rangeStart.year, rangeStart.month + 1, 1)
+              .subtract(const Duration(days: 1));
+          break;
         case TimeRange.total:
           rangeStart = widget.startTime;
           rangeEnd = csdFile.getStopTime();
+          break;
       }
 
       // Calculate indices based on sample rate
@@ -259,6 +265,20 @@ class _GraphicViewState extends State<GraphicView> {
     final dateTime =
         _rangeStartTime?.add(timeOffset) ?? widget.startTime.add(timeOffset);
 
+    // For monthly view, add extra check for first day
+    if (_currentTimeRange == TimeRange.monthly) {
+      // Skip label if it's too close to the start and not exactly at day 1
+      if (value < _calculateXAxisInterval() * 0.5 && dateTime.day != 1) {
+        return ''; // Return empty string to skip this label
+      }
+      // For first day of month, show full month name
+      if (dateTime.day == 1) {
+        return DateFormat('MMMM\nd').format(dateTime);
+      }
+      // For other days, show MM-dd format
+      return DateFormat('MM-dd').format(dateTime);
+    }
+
     return switch (_currentTimeRange) {
       TimeRange.hour => _timeFormatter.format(dateTime),
       TimeRange.daily => _timeFormatter.format(dateTime),
@@ -340,30 +360,16 @@ class _GraphicViewState extends State<GraphicView> {
   }
 
   double _calculateXAxisInterval() {
-    // Always provide a minimum interval
-    const double MIN_INTERVAL = 0.1; // 6 minutes
-
-    if (_chartData.isEmpty || _chartData.length == 1) {
-      return MIN_INTERVAL;
-    }
-
-    // Calculate total hours considering sample rate
-    double totalHours = (_chartData.last.x - _chartData.first.x);
-
-    if (totalHours <= 0) {
-      return MIN_INTERVAL;
-    }
-
-    // Calculate intervals based on time range and sample rate
-    double interval = switch (_currentTimeRange) {
-      TimeRange.hour => Math.max(MIN_INTERVAL, 0.25), // 15-minute intervals
-      TimeRange.daily => Math.max(2.0, totalHours / 12), // 12 intervals per day
-      TimeRange.monthly =>
-        Math.max(24.0, totalHours / 30), // 30 intervals per month
-      TimeRange.total => Math.max(24.0, totalHours / 10), // 10 intervals total
+    // Adjust intervals based on time range
+    return switch (_currentTimeRange) {
+      TimeRange.hour => 0.25, // 15-minute intervals
+      TimeRange.daily => 2.0, // 2-hour intervals
+      TimeRange.monthly => 24.0, // 1-day intervals
+      TimeRange.total => Math.max(
+          24.0,
+          (_chartData.isEmpty ? 1 : _chartData.last.x) /
+              10), // 10 intervals total
     };
-
-    return interval;
   }
 
   // Add these methods to handle time range navigation
@@ -379,12 +385,26 @@ class _GraphicViewState extends State<GraphicView> {
         newStartTime = _rangeStartTime?.add(
           Duration(hours: forward ? 1 : -1),
         );
+        // For hourly view, check if any data exists in the previous hour
+        if (!forward && newStartTime != null) {
+          final hourStart = newStartTime;
+          final hourEnd = hourStart.add(const Duration(hours: 1));
+          // Allow going back if the previous hour contains the data start time
+          if (hourEnd.isAfter(widget.startTime) &&
+              hourStart.isBefore(widget.startTime)) {
+            newStartTime = DateTime(
+              widget.startTime.year,
+              widget.startTime.month,
+              widget.startTime.day,
+              widget.startTime.hour,
+            );
+          }
+        }
       case TimeRange.daily:
         newStartTime = _rangeStartTime?.add(
           Duration(days: forward ? 1 : -1),
         );
       case TimeRange.monthly:
-        // Add or subtract one month
         if (_rangeStartTime != null) {
           if (forward) {
             newStartTime = DateTime(
@@ -406,13 +426,26 @@ class _GraphicViewState extends State<GraphicView> {
 
     // Check if the new time is within valid range
     if (newStartTime != null) {
-      if (newStartTime.isBefore(widget.startTime)) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Already at the beginning of data')),
-        );
-        return;
-      }
-      if (newStartTime.isAfter(stopTime)) {
+      // For going back, check if the end of the new range includes data
+      if (!forward) {
+        final rangeEnd = switch (_currentTimeRange) {
+          TimeRange.hour => newStartTime.add(const Duration(hours: 1)),
+          TimeRange.daily => newStartTime.add(const Duration(days: 1)),
+          TimeRange.monthly => DateTime(
+              newStartTime.year,
+              newStartTime.month + 1,
+              1,
+            ),
+          TimeRange.total => stopTime,
+        };
+
+        if (rangeEnd.isBefore(widget.startTime)) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Already at the beginning of data')),
+          );
+          return;
+        }
+      } else if (newStartTime.isAfter(stopTime)) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Already at the end of data')),
         );
@@ -467,6 +500,22 @@ class _GraphicViewState extends State<GraphicView> {
       }
     }
 
+    // Calculate x-axis range based on current time range
+    double minX = 0;
+    double maxX = switch (_currentTimeRange) {
+      TimeRange.hour => 1.0, // 1 hour
+      TimeRange.daily => 24.0, // 24 hours
+      TimeRange.monthly => (_rangeStartTime!
+              .add(Duration(
+                  days: DateTime(
+                          _rangeStartTime!.year, _rangeStartTime!.month + 1, 0)
+                      .day))
+              .difference(_rangeStartTime!)
+              .inHours)
+          .toDouble(), // Full month in hours
+      TimeRange.total => data.isEmpty ? 1 : data.last.x,
+    };
+
     return LineChart(
       LineChartData(
         gridData: FlGridData(
@@ -481,10 +530,18 @@ class _GraphicViewState extends State<GraphicView> {
               showTitles: true,
               getTitlesWidget: (value, meta) {
                 if (data.isEmpty) return const SizedBox.shrink();
-                return Text(
-                  _formatXAxisLabel(value),
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 10),
+                // Skip the first label if it's too close to the axis
+                if (value == data.first.x &&
+                    value < _calculateXAxisInterval() * 0.5) {
+                  return const SizedBox.shrink();
+                }
+                return Padding(
+                  padding: const EdgeInsets.only(top: 5),
+                  child: Text(
+                    _formatXAxisLabel(value),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 10),
+                  ),
                 );
               },
               interval: Math.max(0.1, _calculateXAxisInterval()),
@@ -526,8 +583,8 @@ class _GraphicViewState extends State<GraphicView> {
                 color: Colors.transparent), // Make right border transparent
           ),
         ),
-        minX: data.isEmpty ? 0 : data.first.x,
-        maxX: data.isEmpty ? 1 : data.last.x,
+        minX: minX,
+        maxX: maxX,
         minY: minY.isFinite ? minY : 0,
         maxY: maxY.isFinite ? maxY : 1,
         lineBarsData: [
