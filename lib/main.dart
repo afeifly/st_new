@@ -7,6 +7,8 @@ import 'graphic_view.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:math' as Math;
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as path;
 
 void main() {
   runApp(const MyApp());
@@ -58,6 +60,8 @@ class _MyHomePageState extends State<MyHomePage> {
   int _totalPages = 0;
   double _sliderPosition = 0.0;
   int _actualSamples = 0;
+  bool _isExporting = false;
+  double _exportProgress = 0.0;
 
   // Add this method to format values based on resolution
   String _formatValue(dynamic value, int resolution) {
@@ -473,6 +477,169 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
     return actualSamples != _totalPages * _recordsPerPage;
   }
 
+  // Add method to export data to CSV
+  Future<void> _exportToCSV() async {
+    if (_lastLoadedFilePath == null) return;
+
+    try {
+      // Ask user for save location
+      String? outputPath = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save CSV File',
+        fileName: '${path.basenameWithoutExtension(_lastLoadedFilePath!)}.csv',
+        type: FileType.custom,
+        allowedExtensions: ['csv'],
+      );
+
+      if (outputPath == null) return; // User cancelled
+
+      // Add .csv extension if not present
+      if (!outputPath.toLowerCase().endsWith('.csv')) {
+        outputPath += '.csv';
+      }
+
+      setState(() {
+        _isExporting = true;
+        _exportProgress = 0.0;
+      });
+
+      // Open the CSD file
+      var csdFile = CsdFileHandler();
+      await csdFile.load(_lastLoadedFilePath!);
+
+      // Get file info
+      final numChannels = csdFile.getProtocolHeader().numOfChannels;
+      final protocolSamples = csdFile.getProtocolHeader().numOfSamples;
+      final channelDescriptions = csdFile.getChannelDescriptions();
+      final unitTexts = csdFile.getUnitTexts();
+      final resolutions = csdFile.getResolutions();
+      final startTime = csdFile.getStartTime();
+      final sampleRate = csdFile.getProtocolHeader().sampleRate;
+
+      // Calculate actual number of samples based on file size
+      final file = File(_lastLoadedFilePath!);
+      final fileSize = await file.length();
+      final headerSize = CsdConstants.CHANNEL_HEADERS_START +
+          (CsdConstants.CHANNEL_HEADER_LENGTH * numChannels);
+      final recordLength = CsdConstants.RECORD_ID_LENGTH +
+          (CsdConstants.CHANNEL_VALUE_LENGTH * numChannels);
+      final dataSize = fileSize - headerSize;
+      final actualSamples = (dataSize / recordLength).floor();
+
+      // Use the smaller of the two to avoid errors
+      final totalSamples = Math.min(protocolSamples, actualSamples);
+
+      // Create and open output file
+      final outputFile = File(outputPath);
+      final sink = outputFile.openWrite();
+
+      // Write header row
+      final headerRow = [
+        'Timestamp',
+        ...List.generate(numChannels,
+            (i) => _escapeCSV('${channelDescriptions[i]} (${unitTexts[i]})'))
+      ];
+      sink.writeln(headerRow.join(','));
+
+      // Process in batches
+      const batchSize = 1000;
+      final totalBatches = (totalSamples / batchSize).ceil();
+
+      for (int batch = 0; batch < totalBatches; batch++) {
+        final startIndex = batch * batchSize;
+        final endIndex =
+            Math.min((batch + 1) * batchSize - 1, totalSamples - 1);
+
+        // Update progress
+        setState(() {
+          _exportProgress = batch / totalBatches;
+        });
+
+        try {
+          // Get batch data
+          final batchData =
+              await csdFile.getDataWithSampling(startIndex, endIndex);
+
+          // Check if we got valid data
+          if (batchData.isEmpty || batchData[0].isEmpty) {
+            continue;
+          }
+
+          // Process each record in the batch
+          for (int i = 0; i < batchData[0].length; i++) {
+            final recordIndex = startIndex + i;
+            final timestamp =
+                startTime.add(Duration(seconds: recordIndex * sampleRate));
+            final formattedTimestamp =
+                DateFormat('yyyy-MM-dd HH:mm:ss').format(timestamp);
+
+            // Format values for each channel
+            final values = List.generate(
+                numChannels,
+                (channel) => _escapeCSV(
+                    _formatValue(batchData[channel][i], resolutions[channel])));
+
+            // Write record to CSV
+            sink.writeln([_escapeCSV(formattedTimestamp), ...values].join(','));
+          }
+        } catch (e) {
+          print('Error processing batch $batch: $e');
+          // Continue with next batch
+        }
+
+        // Allow UI to update
+        await Future.delayed(const Duration(milliseconds: 1));
+      }
+
+      // Close files
+      await sink.flush();
+      await sink.close();
+      await csdFile.close();
+
+      setState(() {
+        _isExporting = false;
+        _exportProgress = 1.0;
+      });
+
+      // Show success message
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Export completed: $outputPath'),
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    } catch (e) {
+      print('Error exporting to CSV: $e');
+      setState(() {
+        _isExporting = false;
+      });
+
+      // Show error message
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Export failed: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    }
+  }
+
+  // Helper method to properly escape CSV values
+  String _escapeCSV(String value) {
+    // If the value contains commas, newlines, or quotes, wrap it in quotes
+    if (value.contains(',') || value.contains('\n') || value.contains('"')) {
+      // Double up any quotes in the value
+      value = value.replaceAll('"', '""');
+      // Wrap the value in quotes
+      return '"$value"';
+    }
+    return value;
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool hasError = _fileInfo.contains('Error') ||
@@ -507,6 +674,22 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
                     icon:
                         Icon(_showChart ? Icons.arrow_back : Icons.show_chart),
                     label: Text(_showChart ? 'Back to Info' : 'Show Chart'),
+                  ),
+                  const SizedBox(width: 16),
+                  ElevatedButton.icon(
+                    onPressed: _isExporting ? null : _exportToCSV,
+                    icon: _isExporting
+                        ? SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              value: _exportProgress,
+                            ),
+                          )
+                        : const Icon(Icons.download),
+                    label:
+                        Text(_isExporting ? 'Exporting...' : 'Export to CSV'),
                   ),
                   if (_showChart) ...[
                     const SizedBox(width: 16),
