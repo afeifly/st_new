@@ -25,6 +25,8 @@ class GraphicView extends StatefulWidget {
   final List<double> channelMaxs;
   final int selectedChannel;
   final ValueChanged<int> onChannelChanged;
+  final List<int> selectedChannels;
+  final ValueChanged<List<int>>? onSelectedChannelsChanged;
 
   const GraphicView({
     super.key,
@@ -39,6 +41,8 @@ class GraphicView extends StatefulWidget {
     required this.channelMaxs,
     required this.selectedChannel,
     required this.onChannelChanged,
+    this.selectedChannels = const [],
+    this.onSelectedChannelsChanged,
   });
 
   @override
@@ -57,6 +61,22 @@ class _GraphicViewState extends State<GraphicView> {
   TimeRange _currentTimeRange = TimeRange.total;
   DateTime? _rangeStartTime;
   bool _isLoading = false;
+
+  // Add a map to store chart data for multiple channels
+  Map<int, List<FlSpot>> _multiChannelData = {};
+  // Add a list of chart colors
+  final List<Color> _chartColors = [
+    Colors.blue,
+    Colors.red,
+    Colors.green,
+    Colors.orange,
+    Colors.purple,
+    Colors.teal,
+    Colors.pink,
+    Colors.amber,
+    Colors.indigo,
+    Colors.cyan,
+  ];
 
   @override
   void initState() {
@@ -196,38 +216,56 @@ class _GraphicViewState extends State<GraphicView> {
       );
 
       setState(() {
-        List<List<FlSpot>> segments = [[]];
-        int currentSegment = 0;
+        // Clear previous data
+        _multiChannelData.clear();
+
+        // Determine which channels to process
+        List<int> channelsToProcess = widget.selectedChannels.isNotEmpty
+            ? widget.selectedChannels
+            : [channelIndex]; // Fall back to single channel if none selected
+
         _minY = double.infinity;
         _maxY = double.negativeInfinity;
 
-        // Process each data point
-        for (int i = 0; i < channelData[channelIndex].length; i++) {
-          final value = channelData[channelIndex][i];
+        // Process each selected channel
+        for (int channel in channelsToProcess) {
+          if (channel >= channelData.length) continue;
 
-          // Handle special values
-          if (value == -9999.0 || value == -8888.0) {
-            // Use actual special values
-            if (segments[currentSegment].isNotEmpty) {
-              segments.add([]);
-              currentSegment++;
+          List<List<FlSpot>> segments = [[]];
+          int currentSegment = 0;
+
+          // Process each data point for this channel
+          for (int i = 0; i < channelData[channel].length; i++) {
+            final value = channelData[channel][i];
+
+            // Handle special values
+            if (value == -9999.0 || value == -8888.0) {
+              // Use actual special values
+              if (segments[currentSegment].isNotEmpty) {
+                segments.add([]);
+                currentSegment++;
+              }
+              continue;
             }
-            continue;
+
+            final timeOffset = Duration(
+                seconds:
+                    (actualStartIndex + i * _samplingStep) * widget.sampleRate);
+            final pointTime = widget.startTime.add(timeOffset);
+            final x = pointTime.difference(rangeStart).inSeconds / 3600.0;
+
+            segments[currentSegment].add(FlSpot(x, value));
+
+            if (value != -7777.0) {
+              // Assuming -7777.0 is DATA_SENSOR_CHANGE
+              _minY = Math.min(_minY, value);
+              _maxY = Math.max(_maxY, value);
+            }
           }
 
-          final timeOffset = Duration(
-              seconds:
-                  (actualStartIndex + i * _samplingStep) * widget.sampleRate);
-          final pointTime = widget.startTime.add(timeOffset);
-          final x = pointTime.difference(rangeStart).inSeconds / 3600.0;
-
-          segments[currentSegment].add(FlSpot(x, value));
-
-          if (value != -7777.0) {
-            // Assuming -7777.0 is DATA_SENSOR_CHANGE
-            _minY = Math.min(_minY, value);
-            _maxY = Math.max(_maxY, value);
-          }
+          // Store the data for this channel
+          _multiChannelData[channel] =
+              segments.expand((segment) => segment).toList();
         }
 
         // Add padding to Y-axis range
@@ -241,14 +279,15 @@ class _GraphicViewState extends State<GraphicView> {
           _maxY = 1;
         }
 
-        // Update chart data
-        _chartData = segments.expand((segment) => segment).toList();
+        // For backward compatibility, also update _chartData with the primary channel data
+        _chartData = _multiChannelData[channelIndex] ?? [const FlSpot(0, 0)];
       });
 
       await csdFile.close();
     } catch (e, stack) {
       setState(() {
         _chartData = [const FlSpot(0, 0)];
+        _multiChannelData.clear();
         _minY = 0;
         _maxY = 1;
       });
@@ -516,6 +555,52 @@ class _GraphicViewState extends State<GraphicView> {
       TimeRange.total => data.isEmpty ? 1 : data.last.x,
     };
 
+    // Determine which channels to display
+    List<int> channelsToDisplay = widget.selectedChannels.isNotEmpty
+        ? widget.selectedChannels
+        : [channelIndex]; // Fall back to single channel if none selected
+
+    // Check if all selected channels have the same unit
+    String? commonUnit;
+    bool sameUnit = true;
+    if (channelsToDisplay.length > 1) {
+      commonUnit = widget.unitTexts[channelsToDisplay.first];
+      for (int i = 1; i < channelsToDisplay.length; i++) {
+        if (widget.unitTexts[channelsToDisplay[i]] != commonUnit) {
+          sameUnit = false;
+          break;
+        }
+      }
+    } else {
+      commonUnit = widget.unitTexts[channelIndex];
+    }
+
+    // Prepare line bars data for each channel
+    List<LineChartBarData> lineBars = [];
+    for (int i = 0; i < channelsToDisplay.length; i++) {
+      final channel = channelsToDisplay[i];
+      // Skip channels with different units
+      if (!sameUnit && channel != channelIndex) continue;
+
+      final channelData = _multiChannelData[channel] ?? [];
+      if (channelData.isEmpty) continue;
+
+      // Use a different color for each channel
+      final colorIndex = i % _chartColors.length;
+
+      lineBars.add(
+        LineChartBarData(
+          spots: channelData,
+          isCurved: false, // Disable curve for better performance
+          color: _chartColors[colorIndex],
+          dotData: const FlDotData(show: false),
+          belowBarData: BarAreaData(show: false),
+          preventCurveOverShooting: true,
+          isStrokeCapRound: true,
+        ),
+      );
+    }
+
     return LineChart(
       LineChartData(
         gridData: FlGridData(
@@ -549,7 +634,7 @@ class _GraphicViewState extends State<GraphicView> {
             ),
           ),
           leftTitles: AxisTitles(
-            axisNameWidget: Text(widget.unitTexts[channelIndex]),
+            axisNameWidget: Text(commonUnit ?? ''),
             sideTitles: SideTitles(
               showTitles: true,
               reservedSize: 50,
@@ -587,17 +672,19 @@ class _GraphicViewState extends State<GraphicView> {
         maxX: maxX,
         minY: minY.isFinite ? minY : 0,
         maxY: maxY.isFinite ? maxY : 1,
-        lineBarsData: [
-          LineChartBarData(
-            spots: data,
-            isCurved: false, // Disable curve for better performance
-            color: Colors.blue,
-            dotData: const FlDotData(show: false),
-            belowBarData: BarAreaData(show: false),
-            preventCurveOverShooting: true,
-            isStrokeCapRound: true,
-          ),
-        ],
+        lineBarsData: lineBars.isEmpty
+            ? [
+                LineChartBarData(
+                  spots: data,
+                  isCurved: false,
+                  color: Colors.blue,
+                  dotData: const FlDotData(show: false),
+                  belowBarData: BarAreaData(show: false),
+                  preventCurveOverShooting: true,
+                  isStrokeCapRound: true,
+                ),
+              ]
+            : lineBars,
         lineTouchData: LineTouchData(
           enabled: true,
           touchTooltipData: LineTouchTooltipData(
@@ -617,11 +704,19 @@ class _GraphicViewState extends State<GraphicView> {
                 final DateTime time = _rangeStartTime!
                     .add(Duration(seconds: (timeInHours * 3600).round()));
                 final timeStr = _fullFormatter.format(time);
+
+                // Find which channel this spot belongs to
+                int spotChannel = channelIndex;
+                if (touchedSpot.barIndex < channelsToDisplay.length) {
+                  spotChannel = channelsToDisplay[touchedSpot.barIndex];
+                }
+
                 return LineTooltipItem(
                   '$timeStr\n'
-                  '${_formatValue(value)} ${widget.unitTexts[channelIndex]}',
-                  const TextStyle(
-                    color: Colors.amber,
+                  '${widget.channelDescriptions[spotChannel]}: ${_formatValue(value)} ${widget.unitTexts[spotChannel]}',
+                  TextStyle(
+                    color: _chartColors[
+                        touchedSpot.barIndex % _chartColors.length],
                     fontSize: 12,
                     fontWeight: FontWeight.normal,
                   ),
@@ -644,7 +739,7 @@ class _GraphicViewState extends State<GraphicView> {
                       radius: 4,
                       color: Colors.white,
                       strokeWidth: 2,
-                      strokeColor: Colors.blue,
+                      strokeColor: barData.color ?? Colors.blue,
                     );
                   },
                 ),
@@ -655,6 +750,145 @@ class _GraphicViewState extends State<GraphicView> {
         ),
       ),
     );
+  }
+
+  // Add this method to show channel selection dialog
+  Future<void> _showChannelSelectionDialog() async {
+    // Group channels by unit
+    Map<String, List<int>> channelsByUnit = {};
+    for (int i = 0; i < widget.numChannels; i++) {
+      final unit = widget.unitTexts[i];
+      if (!channelsByUnit.containsKey(unit)) {
+        channelsByUnit[unit] = [];
+      }
+      channelsByUnit[unit]!.add(i);
+    }
+
+    // Create a temporary list to track selections
+    List<int> tempSelectedChannels = List.from(widget.selectedChannels.isEmpty
+        ? [widget.selectedChannel]
+        : widget.selectedChannels);
+    String? selectedUnit = tempSelectedChannels.isNotEmpty
+        ? widget.unitTexts[tempSelectedChannels.first]
+        : null;
+
+    final result = await showDialog<List<int>>(
+      context: context,
+      builder: (BuildContext context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: const Text('Select Channels'),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Select channels with the same unit to display together:',
+                      style: TextStyle(fontSize: 14),
+                    ),
+                    const SizedBox(height: 8),
+                    if (selectedUnit != null) ...[
+                      Chip(
+                        label: Text('Unit: $selectedUnit'),
+                        backgroundColor: Colors.blue.withOpacity(0.2),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    Expanded(
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: widget.numChannels,
+                        itemBuilder: (context, index) {
+                          final unit = widget.unitTexts[index];
+                          final isEnabled =
+                              selectedUnit == null || unit == selectedUnit;
+
+                          return CheckboxListTile(
+                            title: Text(widget.channelDescriptions[index]),
+                            subtitle: Text('Unit: ${widget.unitTexts[index]}'),
+                            value: tempSelectedChannels.contains(index),
+                            activeColor: isEnabled ? Colors.blue : Colors.grey,
+                            enabled: isEnabled,
+                            onChanged: isEnabled
+                                ? (bool? value) {
+                                    setState(() {
+                                      if (value == true) {
+                                        // If this is the first selection, set the selected unit
+                                        if (tempSelectedChannels.isEmpty) {
+                                          selectedUnit = unit;
+                                        }
+                                        tempSelectedChannels.add(index);
+                                      } else {
+                                        tempSelectedChannels.remove(index);
+                                        // If no channels are selected, reset the selected unit
+                                        if (tempSelectedChannels.isEmpty) {
+                                          selectedUnit = null;
+                                        }
+                                      }
+                                    });
+                                  }
+                                : null,
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context, tempSelectedChannels),
+                  child: const Text('Apply'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result != null) {
+      // If no channels were selected, default to the current channel
+      final selectedChannels =
+          result.isEmpty ? [widget.selectedChannel] : result;
+
+      // Call the callback to update the parent widget
+      if (selectedChannels.length == 1) {
+        // For a single channel, just update the selected channel
+        widget.onChannelChanged(selectedChannels.first);
+        // Also clear the selected channels list
+        if (widget.onSelectedChannelsChanged != null) {
+          widget.onSelectedChannelsChanged!([]);
+        }
+      } else if (selectedChannels.isNotEmpty) {
+        // For multiple channels, update both the primary channel and the selected channels list
+        widget.onChannelChanged(selectedChannels.first);
+
+        if (widget.onSelectedChannelsChanged != null) {
+          widget.onSelectedChannelsChanged!(selectedChannels);
+        }
+
+        // Show a confirmation message
+        final scaffold = ScaffoldMessenger.of(context);
+        scaffold.showSnackBar(
+          SnackBar(
+            content: Text('Selected ${selectedChannels.length} channels'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+
+      // Update the chart with the selected channels
+      setState(() {});
+      await _prepareChartData(widget.selectedChannel);
+    }
   }
 
   @override
@@ -708,10 +942,57 @@ class _GraphicViewState extends State<GraphicView> {
                           icon: const Icon(Icons.access_time),
                           label: const Text('Change Range'),
                         ),
+                        const SizedBox(width: 8),
+                        TextButton.icon(
+                          onPressed: _showChannelSelectionDialog,
+                          icon: const Icon(Icons.multiline_chart),
+                          label: const Text('Select Channels'),
+                        ),
                       ],
                     ),
                   ],
                 ),
+                // Display selected channels as chips
+                if (widget.selectedChannels.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        const Text(
+                          'Selected: ',
+                          style: TextStyle(
+                              fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(width: 8),
+                        ...widget.selectedChannels.map((channelIndex) {
+                          final colorIndex =
+                              widget.selectedChannels.indexOf(channelIndex) %
+                                  _chartColors.length;
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: Chip(
+                              label: Text(
+                                widget.channelDescriptions[channelIndex],
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: _chartColors[colorIndex],
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              backgroundColor:
+                                  _chartColors[colorIndex].withOpacity(0.1),
+                              side: BorderSide(color: _chartColors[colorIndex]),
+                              visualDensity: VisualDensity.compact,
+                              labelPadding:
+                                  const EdgeInsets.symmetric(horizontal: 4),
+                            ),
+                          );
+                        }).toList(),
+                      ],
+                    ),
+                  ),
+                ],
                 Expanded(
                   child: Stack(
                     children: [

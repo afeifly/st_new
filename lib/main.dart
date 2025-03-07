@@ -62,6 +62,7 @@ class _MyHomePageState extends State<MyHomePage> {
   int _actualSamples = 0;
   bool _isExporting = false;
   double _exportProgress = 0.0;
+  List<int> _selectedChannels = [];
 
   // Add this method to format values based on resolution
   String _formatValue(dynamic value, int resolution) {
@@ -669,28 +670,35 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
                     onPressed: () {
                       setState(() {
                         _showChart = !_showChart;
+                        // Clear selected channels when toggling back from chart view
+                        if (!_showChart) {
+                          _selectedChannels = [];
+                        }
                       });
                     },
                     icon:
                         Icon(_showChart ? Icons.arrow_back : Icons.show_chart),
                     label: Text(_showChart ? 'Back to Info' : 'Show Chart'),
                   ),
-                  const SizedBox(width: 16),
-                  ElevatedButton.icon(
-                    onPressed: _isExporting ? null : _exportToCSV,
-                    icon: _isExporting
-                        ? SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              value: _exportProgress,
-                            ),
-                          )
-                        : const Icon(Icons.download),
-                    label:
-                        Text(_isExporting ? 'Exporting...' : 'Export to CSV'),
-                  ),
+                  // Only show Export to CSV button when not in chart view
+                  if (!_showChart) ...[
+                    const SizedBox(width: 16),
+                    ElevatedButton.icon(
+                      onPressed: _isExporting ? null : _exportToCSV,
+                      icon: _isExporting
+                          ? SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                value: _exportProgress,
+                              ),
+                            )
+                          : const Icon(Icons.download),
+                      label:
+                          Text(_isExporting ? 'Exporting...' : 'Export to CSV'),
+                    ),
+                  ],
                   if (_showChart) ...[
                     const SizedBox(width: 16),
                     SizedBox(
@@ -723,6 +731,8 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
                               if (value != null) {
                                 setState(() {
                                   _selectedChannel = value;
+                                  // Reset selected channels when changing the primary channel
+                                  _selectedChannels = [];
                                 });
                                 if (_showChart) {
                                   setState(() {});
@@ -753,9 +763,16 @@ Time period: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(newStartTime)} - ${DateF
                       channelMins: _channelMins,
                       channelMaxs: _channelMaxs,
                       selectedChannel: _selectedChannel,
+                      selectedChannels:
+                          _selectedChannels, // Pass selected channels
                       onChannelChanged: (value) {
                         setState(() {
                           _selectedChannel = value;
+                        });
+                      },
+                      onSelectedChannelsChanged: (channels) {
+                        setState(() {
+                          _selectedChannels = channels;
                         });
                       },
                     )
